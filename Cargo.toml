@@ -1,0 +1,11 @@
+[package]
+name = "streamshare"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+clap = { version = "4.6.4", features = ["derive"] }
+io = "0.0.2"
+mpsc = "0.3.0"
+rand = "0.10.2"
+sha2 = "0.11.0"
