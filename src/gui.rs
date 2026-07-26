@@ -27,9 +27,6 @@ struct Gui {
     visible: bool,
     last_mouse_move: Instant,
 
-    connected: bool,
-    streaming: bool,
-
     //users: Vec<String>,
 }
 
@@ -181,8 +178,6 @@ impl Gui {
             window_open: true,
             visible : true,
             last_mouse_move : Instant::now(),
-            connected : false,
-            streaming: false,
         }
     }
 
