@@ -5,6 +5,9 @@ edition = "2024"
 
 [dependencies]
 clap = { version = "4.6.4", features = ["derive"] }
+egui = "0.35.0"
+egui-wgpu = "0.35.0"
+egui-winit = "0.35.0"
 io = "0.0.2"
 mpsc = "0.3.0"
 pixels = "0.17.2"
@@ -13,3 +16,4 @@ scrap = "0.5.0"
 # scap = "0.0.5"
 sha2 = "0.11.0"
 winit = "0.30.13"
+winit_input_helper = "0.17.0"

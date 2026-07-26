@@ -8,12 +8,12 @@ mod screencapture;
 mod cli;
 use cli::{Args, Commands};
 mod window;
-
+mod testwindow;
+mod gui;
 
 fn main() -> std::io::Result<()> {
 
-    screencapture::checkscrap()?;
-    window::checkwindows()?;
+    let _ = testwindow::megatest();
 
     // let args = Args::parse();
     //

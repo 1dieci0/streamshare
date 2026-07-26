@@ -3,8 +3,8 @@ use std::io;
 
 pub struct Screen {
     capturer: Capturer,
-    height: usize,
-    width: usize,
+    pub height: usize,
+    pub width: usize,
 }
 
 impl Screen {

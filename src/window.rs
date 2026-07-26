@@ -1,86 +1,175 @@
-use winit::application::ApplicationHandler;
-use winit::event::WindowEvent;
-use winit::event_loop::{ActiveEventLoop, ControlFlow, EventLoop};
-use winit::window::{Window, WindowId};
+#![deny(clippy::all)]
+#![forbid(unsafe_code)]
+
+use std::sync::Arc;
+use std::time::Instant;
+
+use crate::gui::Framework;
 
 use crate::screencapture;
+use pixels::{Error, Pixels, SurfaceTexture};
+use winit::dpi::LogicalSize;
+use winit::event::{Event, WindowEvent};
+use winit::event_loop::EventLoop;
+use winit::event_loop::ControlFlow;
+use winit::keyboard::KeyCode;
+use winit::window::WindowAttributes;
+use winit_input_helper::WinitInputHelper;
 
-#[derive(Default)]
-struct App {
-    window: Option<Window>,
-}
 
-impl ApplicationHandler for App {
-    fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        self.window = Some(event_loop.create_window(Window::default_attributes()).unwrap());
-    }
-
-    fn window_event(&mut self, event_loop: &ActiveEventLoop, id: WindowId, event: WindowEvent) {
-        match event {
-            WindowEvent::CloseRequested => {
-                println!("The close button was pressed; stopping");
-                event_loop.exit();
-            },
-            WindowEvent::RedrawRequested => {
-                // Redraw the application.
-                //
-                // It's preferable for applications that do not render continuously to render in
-                // this event rather than in AboutToWait, since rendering in here allows
-                // the program to gracefully handle redraws requested by the OS.
-
-                // Draw.
-
-                // Queue a RedrawRequested event.
-                //
-                // You only need to call this if you've determined that you need to redraw in
-                // applications which do not always need to. Applications that redraw continuously
-                // can render here instead.
-                self.window.as_ref().unwrap().request_redraw();
-            }
-            _ => (),
-        }
-    }
-}
-
-pub fn checkwindows() -> std::io::Result<()>{
+pub fn checkwindows() -> Result<(), Error> {
     let event_loop = EventLoop::new().unwrap();
-
-    // ControlFlow::Poll continuously runs the event loop, even if the OS hasn't
-    // dispatched any events. This is ideal for games and similar applications.
     event_loop.set_control_flow(ControlFlow::Poll);
 
-    // ControlFlow::Wait pauses the event loop if no events are available to process.
-    // This is ideal for non-game applications that only update in response to user
-    // input, and uses significantly less power/CPU time than ControlFlow::Poll.
-    // event_loop.set_control_flow(ControlFlow::Wait);
-
-    let mut app = App::default();
-    let _ = event_loop.run_app(&mut app);
+    let mut input = WinitInputHelper::new();
 
 
-    loop {
-        // Handle window events
+    let mut screen = screencapture::Screen::new().unwrap();
 
-        if let Ok(frame) = capturer.frame() {
+    let window = {
+        let size = LogicalSize::new(screen.width as u32, screen.height as u32);
+        Arc::new(
+            #[allow(deprecated)]
+            event_loop
+                .create_window(
+                    WindowAttributes::new()
+                        .with_title("Hello Pixels + egui")
+                        .with_inner_size(size)
+                        .with_min_inner_size(size),
+                )
+                .unwrap(),
+        )
+    };
 
-            let pixel_buffer = pixels.frame_mut();
+    let mut pixels = {
+        let window_size = window.inner_size();
+        let surface_texture = SurfaceTexture::new(window_size.width, window_size.height, &window);
+        Pixels::new(screen.width as u32, screen.height as u32, surface_texture)?
+    };
+    
+    let mut framework: Option<Framework> = None;
 
-            for (src, dst) in frame
-                .chunks_exact(4)
-                .zip(pixel_buffer.chunks_exact_mut(4))
-            {
-                dst[0] = src[2];
-                dst[1] = src[1];
-                dst[2] = src[0];
-                dst[3] = 255;
+    #[allow(deprecated)]
+    let res = event_loop.run(|event, event_loop| {
+        match event {
+            Event::Resumed => {
+                let window_size = window.inner_size();
+                let scale_factor = (window.scale_factor()) as f32;
+                framework = Some(Framework::new(
+                    event_loop,
+                    window_size.width,
+                    window_size.height,
+                    scale_factor,
+                    &pixels,
+                ));
+                window.request_redraw();
             }
+            Event::NewEvents(_) => input.step(),
+            Event::AboutToWait => {
+                input.end_step();
+            }
+            Event::DeviceEvent { event, .. } => {
+                input.process_device_event(&event);
+            }
+            Event::WindowEvent { event, .. } => {
+                let Some(framework) = &mut framework else {
+                    return;
+                };
 
-            pixels.render()?;
+                // Handle input events
+                if input.process_window_event(&event) {
+                    // Update the scale factor
+                    if let Some(scale_factor) = input.scale_factor() {
+                        framework.scale_factor(scale_factor);
+                    }
+
+                    // Resize the window
+                    if let Some(size) = input.window_resized()
+                        && size.width > 0
+                        && size.height > 0
+                    {
+                        if let Err(err) = pixels.resize_surface(size.width, size.height) {
+                            event_loop.exit();
+                            return;
+                        }
+                        framework.resize(size.width, size.height);
+                    }
+                }
+
+                match event {
+
+                WindowEvent::CloseRequested => {
+                    event_loop.exit();
+                }
+                WindowEvent::RedrawRequested => {
+
+                    match screen.current_frame() {
+                        Ok(frame) => {
+                            let output = pixels.frame_mut();
+
+
+                            for (src, dst) in frame
+                                .chunks_exact(4)
+                                .zip(output.chunks_exact_mut(4))
+                            {
+                                // BGRA -> RGBA
+                                dst[0] = src[2];
+                                dst[1] = src[1];
+                                dst[2] = src[0];
+                                dst[3] = 255;
+                            }
+
+
+                            pixels.render().unwrap();
+                        }
+
+                        Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
+                            return;
+                        }
+
+                        Err(e) => {
+                            println!("capture error: {}", e);
+                        }
+
+                    }
+
+                        // Prepare egui
+                        framework.prepare(&window);
+                         // Render everything together
+                        let render_result =
+                            pixels.render_with(|encoder, render_target, context| {
+                                // Render the world texture
+                                context.scaling_renderer.render(encoder, render_target);
+
+                                // Render egui
+                                framework.render(encoder, render_target, context);
+
+                                Ok(())
+                            });
+
+                        // Basic error handling
+                        if let Err(err) = render_result {
+                            event_loop.exit();
+                        }
+                        
+                        window.request_redraw();
+
+                }
+                    event => {
+                        // Update egui inputs
+                        framework.handle_event(&window, &event);
+                    }
+                }
+            }
+            _ => {}
         }
-    }
-
-
-    Ok(())
+    });
+    res.map_err(|e| Error::UserDefined(Box::new(e)))
 }
 
 
+
+
+
+
+                
