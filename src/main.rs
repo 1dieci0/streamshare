@@ -7,48 +7,52 @@ use client::Client;
 mod screencapture;
 mod cli;
 use cli::{Args, Commands};
+mod window;
 
 
 fn main() -> std::io::Result<()> {
 
-    let args = Args::parse();
+    screencapture::checkscrap()?;
+    window::checkwindows()?;
 
-
-    match args.command {
-
-        Commands::Client {
-            username,
-            address,
-            tcp_port,
-            udp_port,
-        } => {
-
-            println!("Starting client");
-
-            println!("Server: {}", address);
-            println!("TCP: {}", tcp_port);
-            println!("UDP: {}", udp_port);
-
-
-            let s = Client::new(username.to_string(), address.to_string(), tcp_port.to_string(), udp_port.to_string());
-            s.start()?;
-        }
-
-
-        Commands::Server {
-            tcp_port,
-            udp_port,
-        } => {
-
-            println!("Starting server");
-
-            println!("TCP: {}", tcp_port);
-            println!("UDP: {}", udp_port);
-
-            let s = Server::new(tcp_port.to_string(), udp_port.to_string());
-            s.start()?;
-        }
-    }
+    // let args = Args::parse();
+    //
+    //
+    // match args.command {
+    //
+    //     Commands::Client {
+    //         username,
+    //         address,
+    //         tcp_port,
+    //         udp_port,
+    //     } => {
+    //
+    //         println!("Starting client");
+    //
+    //         println!("Server: {}", address);
+    //         println!("TCP: {}", tcp_port);
+    //         println!("UDP: {}", udp_port);
+    //
+    //
+    //         let s = Client::new(username.to_string(), address.to_string(), tcp_port.to_string(), udp_port.to_string());
+    //         s.start()?;
+    //     }
+    //
+    //
+    //     Commands::Server {
+    //         tcp_port,
+    //         udp_port,
+    //     } => {
+    //
+    //         println!("Starting server");
+    //
+    //         println!("TCP: {}", tcp_port);
+    //         println!("UDP: {}", udp_port);
+    //
+    //         let s = Server::new(tcp_port.to_string(), udp_port.to_string());
+    //         s.start()?;
+    //     }
+    // }
 
     Ok(())
 }
