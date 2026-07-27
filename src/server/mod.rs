@@ -1,9 +1,5 @@
 use std::{
-    net::{UdpSocket, TcpListener, SocketAddr},
-    io::{Result},
-    collections::HashMap,
-    sync::{Mutex, Arc},
-    thread,
+    collections::HashMap, io::Result, net::{SocketAddr, TcpListener, UdpSocket}, sync::{Arc, RwLock}, thread,
 };
 
 
@@ -19,7 +15,7 @@ use state::ServerState;
 pub struct Server{
     tcp_address: SocketAddr,
     udp_address: SocketAddr,
-    state: Arc<Mutex<ServerState>>,
+    state: Arc<RwLock<ServerState>>,
 }
 
 
@@ -28,8 +24,9 @@ impl Server{
         Self{
             tcp_address: format!("127.0.0.1:{tcp_port}").parse().unwrap(),
             udp_address: format!("127.0.0.1:{udp_port}").parse().unwrap(),
-            state: Arc::new(Mutex::new(ServerState {
+            state: Arc::new(RwLock::new(ServerState {
                 users: HashMap::new(),
+                streams: HashMap::new(),
             })),
         }
     }
@@ -42,20 +39,6 @@ impl Server{
 
         println!("Listening on {}", tcp_listener.local_addr()?);
 
-        // for stream in tcp_listener.incoming() {
-        //     let state = Arc::clone(&self.state);
-        //
-        //     thread::spawn(move || {
-        //         match stream {
-        //             Ok(stream) => {
-        //                 if let Err(e) = Server::handle_client(stream, state) {
-        //                     eprintln!("Client error: {e}");
-        //                 }
-        //             }
-        //             Err(e) => eprintln!("Accept error: {e}"),
-        //         }
-        //     });
-        // }
 
         let udp_state = Arc::clone(&self.state);
 

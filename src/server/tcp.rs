@@ -1,10 +1,12 @@
+use crate::protocol::VideoPacket;
 use crate::server::auth::{generate_challenge, create_response, SERVER_KEY};
-use crate::server::state::{ServerState, TcpMessage, Client};
+use crate::server::state::{ServerState, TcpMessage, Client, Stream, generate_session_id};
 
+use std::collections::HashSet;
 use std::{
     net::{TcpStream},
     io::{prelude::*,Result},
-    sync::{Mutex, Arc},
+    sync::{RwLock, Arc},
     thread,
     sync::mpsc::{channel},
 };
@@ -12,7 +14,7 @@ use std::{
 
 pub fn handle_tcp(
     mut stream: TcpStream,
-    state: Arc<Mutex<ServerState>>,
+    state: Arc<RwLock<ServerState>>,
 ) -> Result<()> {
 
     /*
@@ -40,6 +42,8 @@ pub fn handle_tcp(
     let username =
         String::from_utf8(username_buf)
             .unwrap();
+
+    let uid: u64;
 
 
     // Receive hash response
@@ -94,6 +98,11 @@ pub fn handle_tcp(
                 TcpMessage::Authenticated => {
                     let _ =
                         write_stream.write_all(&[0x10]);
+                }
+
+                TcpMessage::SendUID(uid) => {
+                    let bytes = uid.to_be_bytes();
+                    let _ = write_stream.write_all(&bytes);
                 }
 
 
@@ -184,31 +193,33 @@ pub fn handle_tcp(
 
     {
         let mut state =
-            state.lock().unwrap();
+            state.write().unwrap();
 
+        uid = generate_session_id(&state);
 
         state.users.insert(
-            username.clone(),
+            uid,
             Client {
                 username: username.clone(),
+                session_id: uid,
                 tcp_sender: tx.clone(),
                 udp_addr: None,
-                streaming: false,
             }
         );
 
-
         // notify existing users
-        for (name, client)
+        for (client_uid, client)
             in &state.users
         {
-            if name != &username {
+            if client_uid != &uid {
                 let _ =
                     client.tcp_sender.send(
                         TcpMessage::UserJoined(
                             username.clone()
                         )
                     );
+            }else{
+                let _ = client.tcp_sender.send(TcpMessage::SendUID(uid));
             }
         }
     }
@@ -237,18 +248,18 @@ pub fn handle_tcp(
 
 
                 let mut state =
-                    state.lock().unwrap();
+                    state.write().unwrap();
 
-
-                if let Some(client)
-                    = state.users.get_mut(&username)
-                {
-                    if client.streaming == true{
-                        continue;
-                    }
-                    client.streaming = true;
+                if state.streams.contains_key(&uid){
+                    continue;
                 }
 
+                state.streams.insert(
+                    uid,
+                    Stream {
+                        latest_packet: None,
+                    }
+                );
 
                 for client in state.users.values()
                 {
@@ -266,19 +277,13 @@ pub fn handle_tcp(
             0x02 => {
 
                 let mut state =
-                    state.lock().unwrap();
+                    state.write().unwrap();
 
-
-                if let Some(client)
-                    = state.users.get_mut(&username)
-                {
-                    if client.streaming == false{
-                        continue;
-                    }
-                    client.streaming = false;
+                if !state.streams.contains_key(&uid){
+                    continue;
                 }
 
-
+                state.streams.remove(&uid);
                 for client in state.users.values()
                 {
                     let _ =
@@ -295,10 +300,11 @@ pub fn handle_tcp(
             0x03 => {
 
                 let mut state =
-                    state.lock().unwrap();
+                    state.write().unwrap();
 
 
-                state.users.remove(&username);
+                state.users.remove(&uid);
+                state.streams.remove(&uid);
 
 
                 for client in state.users.values()
@@ -326,10 +332,10 @@ pub fn handle_tcp(
     */
 
     let mut state =
-        state.lock().unwrap();
+        state.write().unwrap();
 
 
-    state.users.remove(&username);
+    state.users.remove(&uid);
 
 
     for client in state.users.values()

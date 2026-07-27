@@ -1,12 +1,12 @@
 use std::{
-    net::{TcpStream},
-    io::{prelude::*,Result},
-    io::stdin,
-    thread,
+    io::{Result, prelude::*, stdin}, net::TcpStream, sync::{Arc, RwLock, atomic::Ordering}, thread,
 };
+
+use crate::client::ClientState;
 
 pub fn handle_tcp(
     mut stream: TcpStream,
+    state: Arc<RwLock<ClientState>>,
 ) -> Result<()> {
     println!("test");
     let mut receive_stream = stream.try_clone()?;
@@ -53,7 +53,8 @@ pub fn handle_tcp(
             "1" => {
                 // START_STREAM
                 stream.write_all(&[0x01])?;
-
+                let state = state.write().unwrap();
+                state.streaming.store(true, Ordering::Relaxed);
                 println!("Streaming started");
             }
 
@@ -61,7 +62,8 @@ pub fn handle_tcp(
             "2" => {
                 // STOP_STREAM
                 stream.write_all(&[0x02])?;
-
+                let state = state.write().unwrap();
+                state.streaming.store(false, Ordering::Relaxed);
                 println!("Streaming stopped");
             }
 

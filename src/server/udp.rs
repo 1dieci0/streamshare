@@ -1,124 +1,110 @@
 use crate::server::state::{TcpMessage, ServerState};
+use crate::protocol::{VideoPacket};
 
 use std::{
-    net::{UdpSocket},
-    io::{prelude::*, Result},
-    sync::{Mutex, Arc},
-    thread,
+    io::{Result, prelude::*}, net::UdpSocket, sync::{Arc, RwLock}, thread,
 };
 
 
 pub fn udp_loop(
     udp_socket: UdpSocket,
-    udp_state: Arc<Mutex<ServerState>>
+    state: Arc<RwLock<ServerState>>
 )-> Result<()> {
-    let mut buf = [0; 10];
-    let (amt, src) = udp_socket.recv_from(&mut buf)?;
+    let recv_socket = udp_socket.try_clone()?;
+    let send_socket = udp_socket.try_clone()?;
 
-    let buf = &mut buf[..amt];
-    buf.reverse();
-    udp_socket.send_to(buf, &src)?;
-
-
-
+    let recv_state = Arc::clone(&state);
+    let send_state = Arc::clone(&state);
 
     thread::spawn(move || {
+        let mut buf = [0; 1024];
+        loop{
+            let (len, addr) = recv_socket.recv_from(&mut buf).unwrap();
 
-        // let mut message_to_send;
-        // let mut message_bytes;
-        //
-        // while let Ok(message) = rx.recv() {
-        //
-        //     match message {
-        //
-        //         TcpMessage::Authenticated => {
-        //             let _ =
-        //                 write_stream.write_all(&[0x10]);
-        //         }
-        //
-        //
-        //         TcpMessage::UserJoined(name) => {
-        //             message_to_send = format!("{name} joined");
-        //             message_bytes = message_to_send.as_bytes();
-        //
-        //             println!("{message_to_send}");
-        //
-        //             if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
-        //                 println!("Connection closed: {e}");
-        //                 break;
-        //             }
-        //
-        //             if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
-        //                 println!("Connection closed: {e}");
-        //                 break;
-        //             }
-        //         }
-        //
-        //
-        //         TcpMessage::UserLeft(name) => {
-        //             message_to_send = format!("{name} left");
-        //             message_bytes = message_to_send.as_bytes();
-        //
-        //             println!("{message_to_send}");
-        //
-        //             if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
-        //                 println!("Connection closed: {e}");
-        //                 break;
-        //             }
-        //
-        //             if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
-        //                 println!("Connection closed: {e}");
-        //                 break;
-        //             }
-        //         }
-        //
-        //
-        //         TcpMessage::UserStarted(name) => {
-        //             message_to_send = format!("{name} started streaming");
-        //             message_bytes = message_to_send.as_bytes();
-        //
-        //             println!("{message_to_send}");
-        //
-        //             if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
-        //                 println!("Connection closed: {e}");
-        //                 break;
-        //             }
-        //
-        //             if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
-        //                 println!("Connection closed: {e}");
-        //                 break;
-        //             }
-        //         }
-        //
-        //
-        //         TcpMessage::UserStopped(name) => {
-        //             message_to_send = format!("{name} stopped streaming");
-        //             message_bytes = message_to_send.as_bytes();
-        //
-        //             println!("{message_to_send}");
-        //
-        //             if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
-        //                 println!("Connection closed: {e}");
-        //                 break;
-        //             }
-        //
-        //             if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
-        //                 println!("Connection closed: {e}");
-        //                 break;
-        //             }
-        //         }
-        //
-        //
-        //         TcpMessage::Error(err) => {
-        //             println!("error: {}", err);
-        //         }
-        //     }
-        // }
+            //println!("{:?}", &buf);
+            
+            let Some(packet) = VideoPacket::decode(&buf[..len]) else {
+                return;
+            };
+
+            println!("diobono");
+
+            let uid = packet.uid;
+
+            let mut state = recv_state.write().unwrap();
+
+            if !state.streams.contains_key(&uid){
+                continue;
+            }
+
+            println!("diobono");
+
+            let Some(stream) = state.streams.get_mut(&uid) else{
+                return;
+            };
+
+            println!("diobono");
+
+            stream.latest_packet = Some(packet);
+
+        }
+        
     });
 
 
+    loop{
+        let state = send_state.read().unwrap();
 
+        for (&stream_uid, stream) in &state.streams {
+            let Some(packet) = &stream.latest_packet else {
+                continue;
+            };
+
+            let bytes = packet.encode();
+
+            for (&client_uid, client) in &state.users {
+                if client_uid == stream_uid {
+                    continue; 
+                }
+
+                let Some(addr) = client.udp_addr else {
+                    continue;
+                };
+
+                send_socket.send_to(&bytes, addr)?;
+            }
+        }
+    }
 
 
     Ok(())
 } 
+
+
+
+// #[test]
+// fn client_server() {
+//     let server = thread::spawn(||  {
+//         let socket = UdpSocket::bind("127.0.0.1:40000").unwrap();
+//
+//         let mut buf = [0; 1024];
+//         let (len, addr) = socket.recv_from(&mut buf).unwrap();
+//
+//         assert_eq!(&buf[..len], b"ping");
+//
+//         socket.send_to(b"pong", addr).unwrap();
+//     });
+//
+//     thread::sleep(Duration::from_millis(50));
+//
+//     let client = UdpSocket::bind("127.0.0.1:0").unwrap();
+//
+//     client.send_to(b"ping", "127.0.0.1:40000").unwrap();
+//
+//     let mut buf = [0; 1024];
+//     let (len, _) = client.recv_from(&mut buf).unwrap();
+//
+//     assert_eq!(&buf[..len], b"pong");
+//
+//     server.join().unwrap();
+// }
