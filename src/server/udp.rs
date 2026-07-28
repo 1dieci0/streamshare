@@ -1,5 +1,6 @@
 use crate::server::state::{TcpMessage, ServerState};
-use crate::protocol::{VideoPacket};
+use crate::protocol::udp::{UdpPacket};
+use crate::protocol::video::{VideoPacket};
 
 use std::{
     io::{Result, prelude::*}, net::UdpSocket, sync::{Arc, RwLock}, thread,
@@ -21,32 +22,35 @@ pub fn udp_loop(
         loop{
             let (len, addr) = recv_socket.recv_from(&mut buf).unwrap();
 
-            //println!("{:?}", &buf);
             
-            let Some(packet) = VideoPacket::decode(&buf[..len]) else {
+            let Some(packet) = UdpPacket::decode(&buf[..len]) else {
                 return;
             };
 
-            println!("diobono");
-
-            let uid = packet.uid;
-
-            let mut state = recv_state.write().unwrap();
-
-            if !state.streams.contains_key(&uid){
-                continue;
+            match packet{
+                UdpPacket::Register { uid } => {
+                    let mut state = recv_state.write().unwrap();
+                    let Some(user) = state.users.get_mut(&uid) else{
+                        return;
+                    };
+                    println!("{}", addr);
+                    user.udp_addr = Some(addr);
+                }
+                UdpPacket::Video(video) => {
+                    println!("lol");
+                    let mut state = recv_state.write().unwrap();
+                    if !state.streams.contains_key(&video.uid){
+                        continue;
+                    }
+                    let Some(stream) = state.streams.get_mut(&video.uid) else{
+                        return;
+                    };
+                    println!("{:?}", video.data);
+                    stream.latest_packet = Some(video);
+                }
+                UdpPacket::Heartbeat => {}
             }
-
-            println!("diobono");
-
-            let Some(stream) = state.streams.get_mut(&uid) else{
-                return;
-            };
-
-            println!("diobono");
-
-            stream.latest_packet = Some(packet);
-
+            
         }
         
     });
@@ -62,16 +66,20 @@ pub fn udp_loop(
 
             let bytes = packet.encode();
 
+
             for (&client_uid, client) in &state.users {
                 if client_uid == stream_uid {
                     continue; 
                 }
 
                 let Some(addr) = client.udp_addr else {
+                    println!("diobono");
                     continue;
                 };
 
+                println!("ho quasi mandato");
                 send_socket.send_to(&bytes, addr)?;
+                
             }
         }
     }
@@ -79,32 +87,3 @@ pub fn udp_loop(
 
     Ok(())
 } 
-
-
-
-// #[test]
-// fn client_server() {
-//     let server = thread::spawn(||  {
-//         let socket = UdpSocket::bind("127.0.0.1:40000").unwrap();
-//
-//         let mut buf = [0; 1024];
-//         let (len, addr) = socket.recv_from(&mut buf).unwrap();
-//
-//         assert_eq!(&buf[..len], b"ping");
-//
-//         socket.send_to(b"pong", addr).unwrap();
-//     });
-//
-//     thread::sleep(Duration::from_millis(50));
-//
-//     let client = UdpSocket::bind("127.0.0.1:0").unwrap();
-//
-//     client.send_to(b"ping", "127.0.0.1:40000").unwrap();
-//
-//     let mut buf = [0; 1024];
-//     let (len, _) = client.recv_from(&mut buf).unwrap();
-//
-//     assert_eq!(&buf[..len], b"pong");
-//
-//     server.join().unwrap();
-// }

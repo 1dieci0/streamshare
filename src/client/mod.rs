@@ -16,6 +16,8 @@ use tcp::handle_tcp;
 mod udp;
 use udp::udp_loop;
 
+use crate::protocol::udp::UdpPacket;
+
 pub struct Client{
     pub username: String,
     pub tcp_addr: SocketAddr,
@@ -69,9 +71,19 @@ impl Client{
         let mut buf = [0u8; 8];
         stream.read_exact(&mut buf)?;
 
+        let uid = u64::from_be_bytes(buf);
+
         {
-            self.state.write().unwrap().uid = u64::from_be_bytes(buf);
+            self.state.write().unwrap().uid = uid;
         }
+
+        let packet = UdpPacket::Register { uid: (uid) };
+
+        let bytes = packet.encode();
+
+        udp_socket.send_to(&bytes, self.udp_addr)?;
+
+
 
         let udp_state = Arc::clone(&self.state);
 

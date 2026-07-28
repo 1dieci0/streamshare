@@ -4,7 +4,7 @@ use std::{
 use std::sync::mpsc::{Sender};
 use rand::Rng;
 
-use crate::protocol::VideoPacket;
+use crate::protocol::video::VideoPacket;
 
 #[derive(Debug, Clone)]
 pub enum TcpMessage {

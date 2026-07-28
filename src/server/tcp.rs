@@ -1,4 +1,4 @@
-use crate::protocol::VideoPacket;
+use crate::protocol::video::VideoPacket;
 use crate::server::auth::{generate_challenge, create_response, SERVER_KEY};
 use crate::server::state::{ServerState, TcpMessage, Client, Stream, generate_session_id};
 
@@ -215,7 +215,7 @@ pub fn handle_tcp(
                 let _ =
                     client.tcp_sender.send(
                         TcpMessage::UserJoined(
-                            username.clone()
+                            username.clone(),
                         )
                     );
             }else{

@@ -2,7 +2,7 @@ use std::{
     io::{Result, prelude::*}, net::{SocketAddr, UdpSocket}, sync::{Arc, RwLock, atomic::{AtomicBool, Ordering}}, thread,
 };
 
-use crate::{client::ClientState, protocol::VideoPacket};
+use crate::{client::ClientState, protocol::{udp::UdpPacket, video::VideoPacket}};
 use crate::client::Client;
 
 pub fn udp_loop(
@@ -34,11 +34,14 @@ pub fn udp_loop(
         let state = state.read().unwrap();
 
         if state.streaming.load(Ordering::Relaxed) {
-            let packet = VideoPacket{
+
+            let packet = UdpPacket::Video(
+                VideoPacket {
                 uid: state.uid,
-                sequence: state.uid,
-                data: Vec::new(),
-            };
+                sequence: state.sequence,
+                data: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10],
+            });
+
 
             let bytes = packet.encode();
 
