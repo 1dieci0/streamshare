@@ -1,9 +1,11 @@
-use std::time::{Duration, Instant};
+use std::{sync::{Arc, RwLock}, time::{Duration, Instant}};
 
 use egui::{ClippedPrimitive, Context, TexturesDelta, ViewportId};
 use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use pixels::{PixelsContext, wgpu};
 use winit::{event_loop::ActiveEventLoop, window::Window};
+
+use crate::client::ui::state;
 
 /// Manages all state required for rendering egui over `Pixels`.
 pub(crate) struct Framework {
@@ -21,11 +23,11 @@ pub(crate) struct Framework {
 
 /// Example application state. A real application will need a lot more state than this.
 struct Gui {
-    /// Only show the egui window when true.
-    window_open: bool,
 
     visible: bool,
     last_mouse_move: Instant,
+
+    notifications_open: bool
 
     //users: Vec<String>,
 }
@@ -91,12 +93,12 @@ impl Framework {
     }
 
     /// Prepare egui.
-    pub(crate) fn prepare(&mut self, window: &Window) {
+    pub(crate) fn prepare(&mut self, window: &Window, state: Arc<RwLock<state::AppState>>) {
         // Run the egui frame and create all paint jobs to prepare for rendering.
         let raw_input = self.egui_state.take_egui_input(window);
         let output = self.egui_ctx.run_ui(raw_input, |ui| {
             // Draw the demo application.
-            self.gui.ui(&self.egui_ctx, ui);
+            self.gui.ui(&self.egui_ctx, ui, state.clone());
         });
 
         self.textures.append(output.textures_delta);
@@ -175,14 +177,14 @@ impl Gui {
     /// Create a `Gui`.
     fn new() -> Self {
         Self { 
-            window_open: true,
             visible : true,
             last_mouse_move : Instant::now(),
+            notifications_open: true,
         }
     }
 
     /// Create the UI using egui.
-    fn ui(&mut self, ctx: &Context, ui: &mut egui::Ui) {
+    fn ui(&mut self, ctx: &Context, ui: &mut egui::Ui, state: Arc<RwLock<state::AppState>>) {
 
         if !self.visible {
             return;
@@ -190,29 +192,43 @@ impl Gui {
 
         egui::Panel::top("menubar_container").show(ui, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
-                ui.menu_button("File", |ui| {
-                    if ui.button("About...").clicked() {
-                        self.window_open = true;
+                ui.menu_button("View", |ui| {
+                    if ui.button("Notifications").clicked() {
+                        self.notifications_open = true;
                         ui.close();
                     }
                 })
             });
         });
 
-        egui::Window::new("Hello, egui!")
-            .default_pos((30.0, 30.0))
-            .open(&mut self.window_open)
-            .show(ctx, |ui| {
-                ui.label("This example demonstrates using egui with pixels.");
-                ui.label("Made with 💖 in San Francisco!");
+        egui::Area::new("controls".into())
+        .anchor(egui::Align2::CENTER_BOTTOM, [0.0, -20.0])
+        .show(ctx, |ui| {
+            egui::Frame::window(ui.style()).show(ui, |ui|{
+                ui.horizontal(|ui|{
+                
+                    if ui.button("Start streaming").clicked(){
 
-                ui.separator();
+                    };
+                    if ui.button("Disconnect").clicked(){
 
-                ui.horizontal(|ui| {
-                    ui.spacing_mut().item_spacing.x /= 2.0;
-                    ui.label("Learn more about egui at");
-                    ui.hyperlink("https://docs.rs/egui");
-                });
+                    };
+                })
+            })
+        });
+
+        egui::Window::new("Notifications")
+        .default_pos([20.0, 20.0])
+        .default_size([300.0, 250.0])
+        .open(&mut self.notifications_open)
+        .show(ctx, |ui| {
+            egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui|{
+                let state = state.read().unwrap();
+                for notification in &state.notifications {
+                     ui.label(notification);
+                }
             });
+        });
+
     }
 }

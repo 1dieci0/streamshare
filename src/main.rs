@@ -1,3 +1,5 @@
+use std::sync::{Arc, RwLock, mpsc,};
+
 use clap::{Parser};
 
 mod server;
@@ -7,13 +9,11 @@ use client::Client;
 mod screencapture;
 mod cli;
 use cli::{Args, Commands};
-mod window;
-mod gui;
 mod protocol;
+mod media;
+
 
 fn main() -> std::io::Result<()> {
-
-    //let _ = window::megatest();
 
     let args = Args::parse();
     

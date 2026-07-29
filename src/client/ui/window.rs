@@ -1,5 +1,5 @@
 use std::{
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, RwLock},
     thread,
     time::Duration,
 };
@@ -14,32 +14,32 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::gui::Framework;
-
-struct SharedFrame {
-    data: Option<Vec<u8>>,
-}
+use crate::client::ui::gui::Framework;
+use crate::client::ui::state;
+use crate::media::frame::SharedFrame;
 
 struct VideoSize {
     width: usize,
     height: usize,
 }
 
-struct App {
+pub struct App {
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
     framework: Option<Framework>,
     frame: Arc<Mutex<SharedFrame>>,
+    state: Arc<RwLock<state::AppState>>,
     video_size: Option<VideoSize>,
 }
 
 impl App {
-    fn new(frame: Arc<Mutex<SharedFrame>>) -> Self {
+    pub fn new(frame: Arc<Mutex<SharedFrame>>, state: Arc<RwLock<state::AppState>>) -> Self {
         Self {
             window: None,
             pixels: None,
             framework: None,
             frame,
+            state,
             video_size: None,
         }
     }
@@ -221,7 +221,7 @@ impl ApplicationHandler for App {
 
                 if let Some(framework) = self.framework.as_mut() {
                     if let Some(window) = self.window.as_ref() {
-                        framework.prepare(window);
+                        framework.prepare(window, self.state.clone());
                     }
                 }
 
@@ -253,7 +253,7 @@ impl ApplicationHandler for App {
     }
 }
 
-fn start_capture(output: Arc<Mutex<SharedFrame>>) {
+pub fn start_capture(output: Arc<Mutex<SharedFrame>>) {
     thread::spawn(move || {
         let display = Display::primary().unwrap();
         let mut capturer = Capturer::new(display).unwrap();
@@ -271,15 +271,4 @@ fn start_capture(output: Arc<Mutex<SharedFrame>>) {
             }
         }
     });
-}
-
-pub fn megatest() {
-    let frame = Arc::new(Mutex::new(SharedFrame { data: None }));
-
-    start_capture(Arc::clone(&frame));
-
-    let event_loop = EventLoop::new().unwrap();
-    let mut app = App::new(frame);
-
-    event_loop.run_app(&mut app).unwrap();
 }
