@@ -2,97 +2,19 @@ use std::{
     io::{Result, prelude::*, stdin}, net::TcpStream, sync::{Arc, RwLock, atomic::Ordering}, thread,
 };
 
-use crate::client::{state::ClientState, ui::state::AppState};
+use winit::event_loop::EventLoopProxy;
 
-pub fn handle_tcp(
-    mut tcp: TcpStream,
-    client_state: Arc<ClientState>,
-    app_state: Arc<RwLock<AppState>>,
-) -> Result<()> {
-    println!("test");
-    let mut receive_stream = tcp.try_clone()?;
-
-    thread::spawn(move || {
-        let mut len_buf = [0u8; 4];
-
-        loop {
-
-            if let Err(e) = receive_stream.read_exact(&mut len_buf) {
-                println!("Connection closed: {e}");
-                break;
-            }
-
-            let len = u32::from_be_bytes(len_buf) as usize;
-            let mut buffer = vec![0u8; len];
-
-            if let Err(e) = receive_stream.read_exact(&mut buffer) {
-                println!("Connection closed: {e}");
-                break;
-            }
-
-            println!("{}", String::from_utf8_lossy(&buffer));
-        }
-    });
-
-
-    loop {
-
-        println!();
-        println!("1 - start streaming");
-        println!("2 - stop streaming");
-        println!("3 - disconnect");
-
-
-        let mut input = String::new();
-
-        stdin()
-            .read_line(&mut input)?;
-
-
-        match input.trim() {
-
-            "1" => {
-                // START_STREAM
-                tcp.write_all(&[0x01])?;
-                //let client_state = client_state.write().unwrap();
-                client_state.streaming.store(true, Ordering::Relaxed);
-                println!("Streaming started");
-            }
-
-
-            "2" => {
-                // STOP_STREAM
-                tcp.write_all(&[0x02])?;
-                //let client_state = client_state.write().unwrap();
-                client_state.streaming.store(false, Ordering::Relaxed);
-                println!("Streaming stopped");
-            }
-
-
-            "3" => {
-                // DISCONNECT
-                tcp.write_all(&[0x03])?;
-
-                break;
-            }
-
-
-            _ => {
-                println!("Invalid command");
-            }
-        }
-    }
-    Ok(())
-}
-
+use crate::{client::{state::{ClientCommand, ClientState}, ui::{event::AppEvent, state::AppState}}, media::state::MediaState, protocol::tcp::TcpPacket};
 
 pub fn start_receiver(
     mut tcp: TcpStream,
+    media_state: Arc<MediaState>,
     app_state: Arc<RwLock<AppState>>,
+    proxy: EventLoopProxy<AppEvent>,
 ) -> Result<()> {
     thread::spawn(move || {
         loop {
-            match run_receiver(&mut tcp, &app_state){
+            match run_receiver(&mut tcp, &media_state, &app_state, &proxy){
                 Ok(true) => {}
                 Ok(false) => {break},
                 Err(e)  => {
@@ -109,24 +31,70 @@ pub fn start_receiver(
 
 fn run_receiver(
     tcp: &mut TcpStream,
+    media_state: &Arc<MediaState>,
     app_state: &Arc<RwLock<AppState>>,
+    proxy: &EventLoopProxy<AppEvent>,
 ) -> Result<bool> {
     let mut len_buf = [0u8; 4];
 
-    if let Err(e) = tcp.read_exact(&mut len_buf) {
-        println!("Connection closed: {e}");
-        return Err(e);
-    }
+    // if let Err(e) = tcp.read_exact(&mut len_buf) {
+    //     println!("Connection closed: {e}");
+    //     return Err(e);
+    // }
 
     let len = u32::from_be_bytes(len_buf) as usize;
     let mut buffer = vec![0u8; len];
 
-    if let Err(e) = tcp.read_exact(&mut buffer) {
-        println!("Connection closed: {e}");
-        return Err(e);
-    }
+    // if let Err(e) = tcp.read_exact(&mut buffer) {
+    //     println!("Connection closed: {e}");
+    //     return Err(e);
+    // }
 
-    println!("{}", String::from_utf8_lossy(&buffer));
+    // println!("{}", String::from_utf8_lossy(&buffer));
+
+
+    let Some(packet) = TcpPacket::decode(&buffer) else {
+        return Ok(true);
+    };
+
+    match packet {
+        TcpPacket::AuthAccepted => {
+            // shouldn't normally arrive here after login
+        }
+
+        TcpPacket::AuthDenied => {
+            println!("Authentication failed");
+            return Ok(false);
+        }
+
+        TcpPacket::SendUID { uid } => {
+            client_state.uid.store(uid, Ordering::Release);
+        }
+
+        TcpPacket::UserJoined { uid, username } => {
+            media_state.write().unwrap().users.insert(uid, username);
+            let _ = proxy.send_event(AppEvent::UserJoined(uid));
+        }
+
+        TcpPacket::UserLeft { uid, .. } => {
+            media_state.write().unwrap().users.remove(&uid);
+            let _ = proxy.send_event(AppEvent::UserLeft(uid));
+        }
+
+        TcpPacket::StreamStarted { uid, username } => {
+            app_state.write().unwrap().available_streams.insert(uid, super::ui::state::StreamInfo { uid, username, resolution: (1980, 1020), fps: (60) });
+            let _ = proxy.send_event(AppEvent::StreamStarted(uid));
+        }
+
+        TcpPacket::StreamStopped { uid, username } => {
+            app_state.write().unwrap().available_streams.remove(&uid);
+            let _ = proxy.send_event(AppEvent::StreamStopped(uid));
+        }
+
+        TcpPacket::Error { error } => {
+            eprintln!("{error}");
+        }
+    }
 
 
     Ok(true)
@@ -137,11 +105,12 @@ pub fn start_sender(
     mut tcp: TcpStream,
     client_state: Arc<ClientState>,
     app_state: Arc<RwLock<AppState>>,
+    proxy: EventLoopProxy<AppEvent>,
 ) -> Result<()> {
     thread::spawn(move || {
 
         loop {
-            match run_sender(&mut tcp, &client_state, &app_state){
+            match run_sender(&mut tcp, &client_state, &app_state, &proxy){
                 Ok(true) => {}
                 Ok(false) => {break},
                 Err(e) => {
@@ -161,26 +130,26 @@ fn run_sender(
     tcp: &mut TcpStream,
     client_state: &Arc<ClientState>,
     app_state: &Arc<RwLock<AppState>>,
+    proxy: &EventLoopProxy<AppEvent>,
 ) -> Result<bool> {
 
-        println!();
-        println!("1 - start streaming");
-        println!("2 - stop streaming");
-        println!("3 - disconnect");
+        let command = {
+            let mut cmd = client_state.command.lock().unwrap();
+
+            let c = std::mem::replace(
+                &mut *cmd,
+                ClientCommand::None
+            );
+
+            c
+        };
 
 
-        let mut input = String::new();
+        match command {
 
-        stdin()
-            .read_line(&mut input)?;
-
-
-        match input.trim() {
-
-            "1" => {
+            ClientCommand::StartStream => {
                 // START_STREAM
                 tcp.write_all(&[0x01])?;
-                //let client_state = client_state.write().unwrap();
                 client_state.streaming.store(true, Ordering::Relaxed);
                 println!("Streaming started");
 
@@ -188,10 +157,9 @@ fn run_sender(
             }
 
 
-            "2" => {
+            ClientCommand::StopStream => {
                 // STOP_STREAM
                 tcp.write_all(&[0x02])?;
-                //let client_state = client_state.write().unwrap();
                 client_state.streaming.store(false, Ordering::Relaxed);
                 println!("Streaming stopped");
 
@@ -199,16 +167,17 @@ fn run_sender(
             }
 
 
-            "3" => {
+            ClientCommand::Disconnect => {
                 // DISCONNECT
                 tcp.write_all(&[0x03])?;
+                println!("Disconnect");
 
                 Ok(false)
             }
 
 
             _ => {
-                println!("Invalid command");
+                //println!("Invalid command");
 
                 Ok(true)
             }

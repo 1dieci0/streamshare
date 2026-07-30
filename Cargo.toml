@@ -10,6 +10,7 @@ egui-wgpu = "0.35.0"
 egui-winit = "0.35.0"
 io = "0.0.2"
 mpsc = "0.3.0"
+openh264 = { version = "0.9.7", features = ["source"] }
 pixels = "0.17.2"
 rand = "0.10.2"
 scrap = "0.5.0"

@@ -1,50 +1,78 @@
 use std::{
-    sync::{Arc, Mutex, RwLock},
-    thread,
-    time::Duration,
+    sync::{Arc, RwLock}, time::{Duration, Instant},
+
 };
 
 use pixels::{Pixels, SurfaceTexture};
-use scrap::{Capturer, Display};
 use winit::{
     application::ApplicationHandler,
     dpi::PhysicalSize,
     event::WindowEvent,
-    event_loop::{ActiveEventLoop, EventLoop},
+    event_loop::{ActiveEventLoop},
     window::{Window, WindowId},
 };
 
-use crate::client::ui::gui::Framework;
-use crate::client::ui::state;
-use crate::media::frame::SharedFrame;
+use crate::{client::{state::ClientState, ui::{event::AppEvent, gui::Framework, state::AppState}}, media::state::MediaState};
 
-struct VideoSize {
-    width: usize,
-    height: usize,
-}
+
 
 pub struct App {
+    client_state: Arc<ClientState>,
+    app_state: Arc<RwLock<AppState>>,
+    media_state: Arc<MediaState>,
+
     window: Option<Arc<Window>>,
     pixels: Option<Pixels<'static>>,
     framework: Option<Framework>,
-    frame: Arc<Mutex<SharedFrame>>,
-    state: Arc<RwLock<state::AppState>>,
-    video_size: Option<VideoSize>,
+
+    last_ui_update: Instant,
+    ui_dirty: bool,
 }
 
 impl App {
-    pub fn new(frame: Arc<Mutex<SharedFrame>>, state: Arc<RwLock<state::AppState>>) -> Self {
+    pub fn new(
+        client_state: Arc<ClientState>,
+        app_state: Arc<RwLock<AppState>>,
+        media_state: Arc<MediaState>,
+    ) -> Self {
         Self {
+            client_state,
+            app_state,
+            media_state,
             window: None,
             pixels: None,
             framework: None,
-            frame,
-            state,
-            video_size: None,
+
+            last_ui_update: Instant::now(),
+            ui_dirty: true,
         }
     }
 
     fn draw_video(&mut self) {
+
+        let selected_uid = {
+            let state = self.app_state.read().unwrap();
+            state.selected_stream
+        };
+
+        let Some(uid) = selected_uid else {
+            return;
+        };
+
+
+        let Some(frame) = self.media_state.incoming(uid) else {
+            return;
+        };
+
+
+
+        let video_width = frame.width;
+        let video_height = frame.height;
+        let frame = &frame.data;
+
+
+
+
         let Some(pixels) = self.pixels.as_mut() else {
             return;
         };
@@ -53,25 +81,17 @@ impl App {
             return;
         };
 
-        let Some(video_size) = &self.video_size else {
-            return;
-        };
-
-        let Some(frame) = self.frame.lock().unwrap().data.clone() else {
-            return;
-        };
-
         let window_size = window.inner_size();
         let target_width = window_size.width as usize;
         let target_height = window_size.height as usize;
         let output = pixels.frame_mut();
-        let row_bytes = video_size.width.saturating_mul(4);
+        let row_bytes = video_width.saturating_mul(4);
 
-        if row_bytes == 0 || video_size.height == 0 || target_width == 0 || target_height == 0 {
+        if row_bytes == 0 || video_height == 0 || target_width == 0 || target_height == 0 {
             return;
         }
 
-        let src_stride = frame.len() / video_size.height;
+        let src_stride = frame.len() / video_height;
         if src_stride < row_bytes {
             return;
         }
@@ -83,12 +103,12 @@ impl App {
             pixel[3] = 255;
         }
 
-        let scale_x = target_width as f32 / video_size.width as f32;
-        let scale_y = target_height as f32 / video_size.height as f32;
+        let scale_x = target_width as f32 /video_width as f32;
+        let scale_y = target_height as f32 / video_height as f32;
         let scale = scale_x.min(scale_y);
 
-        let scaled_width = (video_size.width as f32 * scale).round() as usize;
-        let scaled_height = (video_size.height as f32 * scale).round() as usize;
+        let scaled_width = (video_width as f32 * scale).round() as usize;
+        let scaled_height = (video_height as f32 * scale).round() as usize;
 
         if scaled_width == 0 || scaled_height == 0 {
             return;
@@ -98,7 +118,7 @@ impl App {
         let offset_y = (target_height - scaled_height) / 2;
 
         for dst_y in 0..scaled_height {
-            let src_y = dst_y.saturating_mul(video_size.height) / scaled_height;
+            let src_y = dst_y.saturating_mul(video_height) / scaled_height;
             let src_row_start = src_y.saturating_mul(src_stride);
             let src_row_end = src_row_start + row_bytes;
 
@@ -110,7 +130,7 @@ impl App {
             let dst_row_start = (dst_y + offset_y).saturating_mul(target_width).saturating_mul(4);
 
             for dst_x in 0..scaled_width {
-                let src_x = dst_x.saturating_mul(video_size.width) / scaled_width;
+                let src_x = dst_x.saturating_mul(video_width) / scaled_width;
                 let src_index = src_x.saturating_mul(4);
                 let dst_index = dst_row_start + (dst_x + offset_x).saturating_mul(4);
 
@@ -129,10 +149,9 @@ impl App {
     }
 }
 
-impl ApplicationHandler for App {
+impl ApplicationHandler<AppEvent> for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        let display = Display::primary().unwrap();
-        let size = PhysicalSize::new(display.width() as u32, display.height() as u32);
+        let size = PhysicalSize::new(1280, 720);
 
         let window = Arc::new(
             event_loop
@@ -159,10 +178,6 @@ impl ApplicationHandler for App {
         self.window = Some(window);
         self.pixels = Some(pixels);
         self.framework = Some(framework);
-        self.video_size = Some(VideoSize {
-            width: size.width as usize,
-            height: size.height as usize,
-        });
     }
 
     fn window_event(
@@ -183,8 +198,14 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::CursorMoved { .. } => {
-                if let Some(framework) = self.framework.as_mut() {
+                self.ui_dirty = true;
+
+                if let Some(framework)=self.framework.as_mut() {
                     framework.mouse_moved();
+                }
+
+                if let Some(window)=&self.window {
+                    window.request_redraw();
                 }
             }
 
@@ -213,15 +234,30 @@ impl ApplicationHandler for App {
             }
 
             WindowEvent::RedrawRequested => {
-                if let Some(framework) = self.framework.as_mut() {
-                    framework.update();
+                let update_ui = self.ui_dirty 
+                    || self.last_ui_update.elapsed() >= Duration::from_millis(100);
+
+                if update_ui {
+                    if let Some(framework) = self.framework.as_mut() {
+                        framework.update();
+                    }
+
+                    self.last_ui_update = Instant::now();
+                    self.ui_dirty = false;
                 }
 
                 self.draw_video();
 
-                if let Some(framework) = self.framework.as_mut() {
-                    if let Some(window) = self.window.as_ref() {
-                        framework.prepare(window, self.state.clone());
+                if update_ui {
+                    if let Some(framework) = self.framework.as_mut() {
+                        if let Some(window) = self.window.as_ref() {
+                            framework.prepare(
+                                window,
+                                Arc::clone(&self.app_state),
+                                Arc::clone(&self.client_state),
+                                Arc::clone(&self.media_state),
+                            );
+                        }
                     }
                 }
 
@@ -246,29 +282,57 @@ impl ApplicationHandler for App {
         }
     }
 
-    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
-        if let Some(window) = &self.window {
-            window.request_redraw();
-        }
-    }
-}
+    fn user_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        event: AppEvent,
+    ) {
 
-pub fn start_capture(output: Arc<Mutex<SharedFrame>>) {
-    thread::spawn(move || {
-        let display = Display::primary().unwrap();
-        let mut capturer = Capturer::new(display).unwrap();
+        match event {
 
-        loop {
-            match capturer.frame() {
-                Ok(frame) => {
-                    let mut buffer = output.lock().unwrap();
-                    buffer.data = Some(frame.to_vec());
-                }
-
-                Err(_) => {
-                    thread::sleep(Duration::from_millis(5));
+            AppEvent::NewFrame(_) => {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
                 }
             }
+
+
+            AppEvent::StreamStarted(uid)=>{
+                println!("{uid} started streaming");
+
+                if let Some(window)=&self.window {
+                    window.request_redraw();
+                }
+            }
+
+            AppEvent::StreamStopped(uid)=>{
+                println!("{uid} stopped streaming");
+
+                if let Some(window)=&self.window {
+                    window.request_redraw();
+                }
+            }
+
+            _=>{}
+
         }
-    });
+    }
+
+    fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
+        let Some(window) = &self.window else {
+            return;
+        };
+
+        // Keep egui alive at 10 FPS
+        if self.last_ui_update.elapsed() >= Duration::from_millis(100) {
+            window.request_redraw();
+        }
+
+        // egui requested an immediate repaint
+        if let Some(framework) = &self.framework {
+            if framework.needs_repaint() {
+                window.request_redraw();
+            }
+        }
+    }
 }

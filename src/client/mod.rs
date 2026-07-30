@@ -1,27 +1,22 @@
-use std::io::Read;
 use std::net::TcpStream;
 use std::net::SocketAddr;
 use std::net::UdpSocket;
 use std::sync::Arc;
 use std::sync::RwLock;
-use std::thread;
-use std::sync::atomic::{AtomicBool};
 
 mod auth;
 use auth::authenticate;
 mod capture;
 mod playback;
 mod tcp;
-use tcp::handle_tcp;
 mod udp;
-use udp::udp_loop;
+use winit::event_loop::EventLoop;
 pub mod state;
 
 mod ui;
 
 use crate::client::auth::get_uid;
 use crate::media;
-use crate::protocol::udp::UdpPacket;
 
 pub struct Client{
     pub username: String,
@@ -33,11 +28,6 @@ pub struct Client{
     pub media_state: Arc<media::state::MediaState>,
 }
 
-// pub struct ClientState{
-//     pub uid: u64,
-//     pub streaming: AtomicBool,
-//     pub sequence: u64,
-// }
 
 impl Client{
     pub fn new(username: String, server_address: String, tcp_port: String, udp_port: String) -> Client{
@@ -51,7 +41,7 @@ impl Client{
         }
     }
 
-    pub fn start(mut self) -> std::io::Result<()>{
+    pub fn start(self) -> std::io::Result<()>{
 
         let mut tcp = TcpStream::connect(self.tcp_addr)?;
 
@@ -66,10 +56,18 @@ impl Client{
             self.udp_addr
         )?;
 
+        let event_loop =
+            EventLoop::<ui::event::AppEvent>::with_user_event()
+            .build()
+            .unwrap();
+    
+        let proxy = event_loop.create_proxy();
+
         media::capture::start_capture(
             Arc::clone(&self.media_state),
             Arc::clone(&self.client_state),
         );
+
 
 
         udp::start_sender(
@@ -86,24 +84,25 @@ impl Client{
             Arc::clone(&self.client_state),
             Arc::clone(&self.app_state),
             Arc::clone(&self.media_state),
+            proxy.clone(),
         );
 
         tcp::start_sender(
             tcp.try_clone()?,
             Arc::clone(&self.client_state),
-            Arc::clone(&self.app_state)
+            Arc::clone(&self.app_state),
+            proxy.clone(),
         );
 
         tcp::start_receiver(
             tcp,
+            Arc::clone(&self.media_state),
             Arc::clone(&self.app_state),
+            proxy,
         );
 
-        ui::start_ui(
-            self.client_state,
-            self.app_state,
-            self.media_state,
-        );
+    
+        ui::start_ui(event_loop, self.client_state, self.app_state, self.media_state);
 
 
 

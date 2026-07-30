@@ -4,25 +4,27 @@ use std::{
 use std::sync::mpsc::{Sender};
 use rand::Rng;
 
+use crate::protocol;
+
 use crate::protocol::video::VideoPacket;
 
-#[derive(Debug, Clone)]
-pub enum TcpMessage {
-    Authenticated,
-    SendUID(u64),
-    UserJoined(String),
-    UserLeft(String),
-    UserStarted(String),
-    UserStopped(String),
-    Error(String),
-}
+// #[derive(Debug, Clone)]
+// pub enum TcpMessage {
+//     Authenticated,
+//     SendUID(u64),
+//     UserJoined(String, u64),
+//     UserLeft(String, u64),
+//     UserStarted(String, u64),
+//     UserStopped(String, u64),
+//     Error(String),
+// }
 
 pub struct Client {
     pub username: String,
     pub session_id: u64,
 
 
-    pub tcp_sender: Sender<TcpMessage>,
+    pub tcp_sender: Sender<protocol::tcp::TcpPacket>,
     pub udp_addr: Option<SocketAddr>,
 }
 

@@ -1,25 +1,29 @@
-use std::sync::{Mutex, Arc, RwLock};
+use std::sync::{Arc, RwLock};
 
 use winit::event_loop::EventLoop;
 
-use crate::{client::{state::ClientState, ui::state::AppState}, media::{frame::SharedFrame, state::MediaState}};
+use crate::{client::{state::ClientState, ui::{state::AppState}}, media::state::MediaState};
 
-mod window;
+pub mod window;
 mod gui;
 pub mod state;
+pub mod event;
 
 
 pub fn start_ui(
+    event_loop: EventLoop<event::AppEvent>,
     client_state: Arc<ClientState>,
     app_state: Arc<RwLock<AppState>>,
     media_state: Arc<MediaState>,
 ) {
-    let frame = Arc::new(Mutex::new(SharedFrame { data: None }));
 
-    window::start_capture(Arc::clone(&frame));
+    let mut app = window::App::new(
+        client_state,
+        app_state,
+        media_state,
+    );
 
-    let event_loop = EventLoop::new().unwrap();
-    let mut app = window::App::new(frame, app_state);
-
-    event_loop.run_app(&mut app).unwrap();
+    event_loop
+        .run_app(&mut app)
+        .unwrap();
 }

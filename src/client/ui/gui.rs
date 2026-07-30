@@ -5,7 +5,8 @@ use egui_wgpu::{Renderer, RendererOptions, ScreenDescriptor};
 use pixels::{PixelsContext, wgpu};
 use winit::{event_loop::ActiveEventLoop, window::Window};
 
-use crate::client::ui::state;
+use crate::{client, media};
+use crate::client::state::ClientCommand;
 
 /// Manages all state required for rendering egui over `Pixels`.
 pub(crate) struct Framework {
@@ -27,7 +28,7 @@ struct Gui {
     visible: bool,
     last_mouse_move: Instant,
 
-    notifications_open: bool
+    notifications_open: bool,
 
     //users: Vec<String>,
 }
@@ -93,12 +94,24 @@ impl Framework {
     }
 
     /// Prepare egui.
-    pub(crate) fn prepare(&mut self, window: &Window, state: Arc<RwLock<state::AppState>>) {
+    pub(crate) fn prepare(
+        &mut self,
+        window: &Window,
+        app_state: Arc<RwLock<client::ui::state::AppState>>,
+        client_state: Arc<client::state::ClientState>,
+        media_state: Arc<media::state::MediaState>,
+    ) {
         // Run the egui frame and create all paint jobs to prepare for rendering.
         let raw_input = self.egui_state.take_egui_input(window);
         let output = self.egui_ctx.run_ui(raw_input, |ui| {
             // Draw the demo application.
-            self.gui.ui(&self.egui_ctx, ui, state.clone());
+            self.gui.ui(
+                &self.egui_ctx,
+                ui,
+                app_state.clone(),
+                client_state.clone(),
+                media_state.clone(),
+            );
         });
 
         self.textures.append(output.textures_delta);
@@ -171,6 +184,10 @@ impl Framework {
             self.gui.visible = false;
         }
     }
+    
+    pub fn needs_repaint(&self) -> bool {
+        self.egui_ctx.has_requested_repaint()
+    }
 }
 
 impl Gui {
@@ -184,7 +201,14 @@ impl Gui {
     }
 
     /// Create the UI using egui.
-    fn ui(&mut self, ctx: &Context, ui: &mut egui::Ui, state: Arc<RwLock<state::AppState>>) {
+    fn ui(
+        &mut self,
+        ctx: &Context,
+        ui: &mut egui::Ui,
+        app_state: Arc<RwLock<client::ui::state::AppState>>,
+        client_state: Arc<client::state::ClientState>,
+        media_state: Arc<media::state::MediaState>,
+    ) {
 
         if !self.visible {
             return;
@@ -208,11 +232,22 @@ impl Gui {
                 ui.horizontal(|ui|{
                 
                     if ui.button("Start streaming").clicked(){
-
+                        client_state.set_command(ClientCommand::StartStream);
+                    };
+                    if ui.button("Stop streaming").clicked(){
+                        client_state.set_command(ClientCommand::StopStream);
                     };
                     if ui.button("Disconnect").clicked(){
-
+                        client_state.set_command(ClientCommand::Disconnect);
                     };
+
+                    let streams = media_state.stream_ids();
+
+                    for uid in streams {
+                        if ui.button(format!("Watch {uid}")).clicked() {
+                            app_state.write().unwrap().selected_stream = Some(uid);
+                        }
+                    }
                 })
             })
         });
@@ -223,8 +258,8 @@ impl Gui {
         .open(&mut self.notifications_open)
         .show(ctx, |ui| {
             egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui|{
-                let state = state.read().unwrap();
-                for notification in &state.notifications {
+                let app_state = app_state.read().unwrap();
+                for notification in &app_state.notifications {
                      ui.label(notification);
                 }
             });

@@ -6,7 +6,6 @@ mod server;
 use server::Server;
 mod client;
 use client::Client;
-mod screencapture;
 mod cli;
 use cli::{Args, Commands};
 mod protocol;

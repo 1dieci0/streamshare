@@ -1,8 +1,8 @@
-use crate::protocol::video::VideoPacket;
+use crate::protocol;
+use crate::protocol::tcp::TcpPacket;
 use crate::server::auth::{generate_challenge, create_response, SERVER_KEY};
-use crate::server::state::{ServerState, TcpMessage, Client, Stream, generate_session_id};
+use crate::server::state::{ServerState, Client, Stream, generate_session_id};
 
-use std::collections::HashSet;
 use std::{
     net::{TcpStream},
     io::{prelude::*,Result},
@@ -60,13 +60,13 @@ pub fn handle_tcp(
 
 
     if response != expected[..] {
-        stream.write_all(&[0x00])?; // denied
+        stream.write_all(&TcpPacket::AuthDenied.encode())?;
         println!("{username} failed authentication");
         return Ok(());
     }
 
 
-    stream.write_all(&[0x01])?; // accepted
+    stream.write_all(&TcpPacket::AuthAccepted.encode())?;
     println!("{username} authenticated");
 
 
@@ -75,7 +75,7 @@ pub fn handle_tcp(
     */
 
     let (tx, rx) =
-        channel::<TcpMessage>();
+        channel::<TcpPacket>();
 
 
     /*
@@ -87,102 +87,130 @@ pub fn handle_tcp(
 
 
     thread::spawn(move || {
+        while let Ok(packet) = rx.recv() {
+            let bytes = packet.encode();
 
-        let mut message_to_send;
-        let mut message_bytes;
+            if let Err(e) = write_stream.write_all(&(bytes.len() as u32).to_be_bytes()) {
+                println!("Connection closed: {e}");
+                break;
+            }
 
-        while let Ok(message) = rx.recv() {
-
-            match message {
-
-                TcpMessage::Authenticated => {
-                    let _ =
-                        write_stream.write_all(&[0x10]);
-                }
-
-                TcpMessage::SendUID(uid) => {
-                    let bytes = uid.to_be_bytes();
-                    let _ = write_stream.write_all(&bytes);
-                }
-
-
-                TcpMessage::UserJoined(name) => {
-                    message_to_send = format!("{name} joined");
-                    message_bytes = message_to_send.as_bytes();
-
-                    println!("{message_to_send}");
-
-                    if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
-                        println!("Connection closed: {e}");
-                        break;
-                    }
-
-                    if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
-                        println!("Connection closed: {e}");
-                        break;
-                    }
-                }
-
-
-                TcpMessage::UserLeft(name) => {
-                    message_to_send = format!("{name} left");
-                    message_bytes = message_to_send.as_bytes();
-
-                    println!("{message_to_send}");
-
-                    if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
-                        println!("Connection closed: {e}");
-                        break;
-                    }
-
-                    if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
-                        println!("Connection closed: {e}");
-                        break;
-                    }
-                }
-
-
-                TcpMessage::UserStarted(name) => {
-                    message_to_send = format!("{name} started streaming");
-                    message_bytes = message_to_send.as_bytes();
-                    
-                    println!("{message_to_send}");
-
-                    if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
-                        println!("Connection closed: {e}");
-                        break;
-                    }
-
-                    if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
-                        println!("Connection closed: {e}");
-                        break;
-                    }
-                }
-
-
-                TcpMessage::UserStopped(name) => {
-                    message_to_send = format!("{name} stopped streaming");
-                    message_bytes = message_to_send.as_bytes();
-
-                    println!("{message_to_send}");
-
-                    if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
-                        println!("Connection closed: {e}");
-                        break;
-                    }
-
-                    if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
-                        println!("Connection closed: {e}");
-                        break;
-                    }
-                }
-
-
-                TcpMessage::Error(err) => {
-                    println!("error: {}", err);
-                }
+            if let Err(e) = write_stream.write_all(&bytes) {
+                println!("Connection closed: {e}");
+                break;
             }
         }
+
+
+        // let mut message_to_send;
+        // let mut message_bytes;
+
+        // while let Ok(message) = rx.recv() {
+
+        //     match message {
+
+        //         TcpPacket::Authenticated => {
+        //             let _ =
+        //                 write_stream.write_all(&[0x10]);
+        //         }
+
+        //         TcpPacket::SendUID{uid} => {
+        //             let bytes = uid.to_be_bytes();
+        //             let _ = write_stream.write_all(&bytes);
+        //         }
+
+
+        //         TcpPacket::UserJoined{
+        //             uid,
+        //             username
+        //         } => {
+        //             message_to_send = format!("{username} joined");
+        //             message_bytes = message_to_send.as_bytes();
+
+        //             println!("{message_to_send}");
+
+        //             if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
+        //                 println!("Connection closed: {e}");
+        //                 break;
+        //             }
+
+        //             if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
+        //                 println!("Connection closed: {e}");
+        //                 break;
+        //             }
+        //         }
+
+
+        //         TcpPacket::UserLeft{
+        //             uid,
+        //             username
+        //         } => {
+        //             message_to_send = format!("{username} left");
+        //             message_bytes = message_to_send.as_bytes();
+
+        //             println!("{message_to_send}");
+
+        //             if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
+        //                 println!("Connection closed: {e}");
+        //                 break;
+        //             }
+
+        //             if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
+        //                 println!("Connection closed: {e}");
+        //                 break;
+        //             }
+        //         }
+
+
+        //         TcpPacket::StreamStarted{
+        //             uid,
+        //             username
+        //         } => {
+        //             let packet = protocol::tcp::TcpPacket::UserJoined {uid, username: username.clone()};
+        //             let bytes = packet.encode();
+        //             message_to_send = format!("{username} started streaming");
+        //             message_bytes = message_to_send.as_bytes();
+                    
+        //             println!("{message_to_send}");
+
+        //             if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
+        //                 println!("Connection closed: {e}");
+        //                 break;
+        //             }
+
+        //             if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
+        //                 println!("Connection closed: {e}");
+        //                 break;
+        //             }
+        //         }
+
+
+        //         TcpPacket::StreamStopped{
+        //             uid, 
+        //             username
+        //         } => {
+        //             message_to_send = format!("{username} stopped streaming");
+        //             message_bytes = message_to_send.as_bytes();
+
+        //             println!("{message_to_send}");
+
+        //             if let Err(e) = write_stream.write_all(&(message_bytes.len() as u32).to_be_bytes()) {
+        //                 println!("Connection closed: {e}");
+        //                 break;
+        //             }
+
+        //             if let Err(e) = write_stream.write_all(message_to_send.as_bytes()) {
+        //                 println!("Connection closed: {e}");
+        //                 break;
+        //             }
+        //         }
+
+
+        //         TcpPacket::Error{error} => {
+        //             println!("error: {}", error);
+        //         }
+        //     }
+        // }
     });
 
 
@@ -214,12 +242,13 @@ pub fn handle_tcp(
             if client_uid != &uid {
                 let _ =
                     client.tcp_sender.send(
-                        TcpMessage::UserJoined(
-                            username.clone(),
-                        )
+                        TcpPacket::UserJoined{
+                            uid,
+                            username: username.clone(),
+                        }
                     );
             }else{
-                let _ = client.tcp_sender.send(TcpMessage::SendUID(uid));
+                let _ = client.tcp_sender.send(TcpPacket::SendUID{uid});
             }
         }
     }
@@ -265,9 +294,10 @@ pub fn handle_tcp(
                 {
                     let _ =
                         client.tcp_sender.send(
-                            TcpMessage::UserStarted(
-                                username.clone()
-                            )
+                            TcpPacket::StreamStarted{
+                                uid,
+                                username: username.clone(),
+                            }
                         );
                 }
             }
@@ -288,9 +318,10 @@ pub fn handle_tcp(
                 {
                     let _ =
                         client.tcp_sender.send(
-                            TcpMessage::UserStopped(
-                                username.clone()
-                            )
+                            TcpPacket::StreamStopped{
+                                uid,
+                                username: username.clone(),
+                            }
                         );
                 }
             }
@@ -311,9 +342,11 @@ pub fn handle_tcp(
                 {
                     let _ =
                         client.tcp_sender.send(
-                            TcpMessage::UserLeft(
-                                username.clone()
-                            )
+                            TcpPacket::UserLeft{
+                                uid,
+                                username: username.clone(),
+                                
+                             }
                         );
                 }
 
@@ -342,9 +375,10 @@ pub fn handle_tcp(
     {
         let _ =
             client.tcp_sender.send(
-                TcpMessage::UserLeft(
-                    username.clone()
-                )
+                TcpPacket::UserLeft{
+                    uid, 
+                    username: username.clone(),
+                }
             );
     }
 
