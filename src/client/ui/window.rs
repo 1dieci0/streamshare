@@ -12,7 +12,7 @@ use winit::{
     window::{Window, WindowId},
 };
 
-use crate::{client::{state::ClientState, ui::{event::AppEvent, gui::Framework, state::AppState}}, media::state::MediaState};
+use crate::{client::{state::{ClientCommand, ClientState}, ui::{event::AppEvent, gui::Framework, state::AppState}}, media::state::MediaState};
 
 
 
@@ -194,6 +194,7 @@ impl ApplicationHandler<AppEvent> for App {
 
         match event {
             WindowEvent::CloseRequested => {
+                self.client_state.set_command(ClientCommand::Disconnect);
                 event_loop.exit();
             }
 
@@ -296,18 +297,26 @@ impl ApplicationHandler<AppEvent> for App {
                 }
             }
 
+            AppEvent::UserJoined(_) => {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
+            AppEvent::UserLeft(_) => {
+                if let Some(window) = &self.window {
+                    window.request_redraw();
+                }
+            }
+
 
             AppEvent::StreamStarted(uid)=>{
-                println!("{uid} started streaming");
-
                 if let Some(window)=&self.window {
                     window.request_redraw();
                 }
             }
 
             AppEvent::StreamStopped(uid)=>{
-                println!("{uid} stopped streaming");
-
                 if let Some(window)=&self.window {
                     window.request_redraw();
                 }

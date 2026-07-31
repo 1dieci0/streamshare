@@ -1,5 +1,5 @@
 use openh264::{
-	encoder::Encoder, formats::{BgraSliceU8, RgbSliceU8, YUVBuffer},
+	encoder::Encoder, formats::{RgbSliceU8, YUVBuffer},
 };
 
 use crate::{media::frame::SharedFrame, protocol::video::{VideoCodec, VideoPacket}};

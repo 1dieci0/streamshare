@@ -1,6 +1,5 @@
 use crate::server::state::{ServerState};
 use crate::protocol::udp::{UdpPacket};
-use crate::protocol::video::{VideoPacket};
 
 use std::{
     io::{Result, prelude::*}, net::UdpSocket, sync::{Arc, RwLock}, thread,

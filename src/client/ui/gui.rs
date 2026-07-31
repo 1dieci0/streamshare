@@ -237,9 +237,9 @@ impl Gui {
                     if ui.button("Stop streaming").clicked(){
                         client_state.set_command(ClientCommand::StopStream);
                     };
-                    if ui.button("Disconnect").clicked(){
-                        client_state.set_command(ClientCommand::Disconnect);
-                    };
+                    // if ui.button("Disconnect").clicked(){
+                    //     client_state.set_command(ClientCommand::Disconnect);
+                    // };
 
                     let streams = media_state.stream_ids();
 
@@ -260,7 +260,7 @@ impl Gui {
             egui::ScrollArea::vertical().stick_to_bottom(true).show(ui, |ui|{
                 let app_state = app_state.read().unwrap();
                 for notification in &app_state.notifications {
-                     ui.label(notification);
+                    ui.label(notification);
                 }
             });
         });

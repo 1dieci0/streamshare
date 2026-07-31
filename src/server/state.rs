@@ -1,8 +1,7 @@
 use std::{
-    collections::{HashMap, HashSet}, net::SocketAddr,
+    collections::{HashMap}, net::SocketAddr,
 };
 use std::sync::mpsc::{Sender};
-use rand::Rng;
 
 use crate::protocol;
 

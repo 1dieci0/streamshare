@@ -9,6 +9,7 @@ use std::sync::atomic::Ordering;
 use sha2::{Digest, Sha256};
 
 use crate::client::state::ClientState;
+use crate::protocol::tcp::TcpPacket;
 use crate::protocol::udp::UdpPacket;
 
 pub const SERVER_KEY: &str = "super_secret_key";
@@ -64,7 +65,7 @@ pub fn authenticate(
     tcp.read_exact(&mut result)?;
 
 
-    Ok(result[0] == 0x01)
+    Ok(result[0] == 0x10)
 }
 
 pub fn get_uid(
@@ -73,23 +74,40 @@ pub fn get_uid(
     udp: &UdpSocket,
     udp_addr: SocketAddr,
 ) -> Result<()>{
-        let mut buf = [0u8; 8];
-        tcp.read_exact(&mut buf)?;
+    let packet = read_packet(tcp)?;
 
-        let uid = u64::from_be_bytes(buf);
+    match packet {
+        TcpPacket::SendUID { uid } => {
+            client_state.uid.store(uid, Ordering::Release);
 
-        
-        //client_state.write().unwrap().uid = uid;
-        client_state.uid.store(uid, Ordering::Release);
+            let packet = UdpPacket::Register { uid };
+            udp.send_to(&packet.encode(), udp_addr)?;
+            Ok(())
+        }
 
-        
-
-        let packet = UdpPacket::Register { uid: (uid) };
-
-        let bytes = packet.encode();
-
-        udp.send_to(&bytes, udp_addr)?;
-
-        Ok(())
+        _ => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                "expected SendUID packet",
+            ));
+        }
+    }
 }
 
+
+pub fn read_packet(stream: &mut TcpStream) -> Result<TcpPacket> {
+    let mut len_buf = [0u8; 4];
+    stream.read_exact(&mut len_buf)?;
+
+    let len = u32::from_be_bytes(len_buf) as usize;
+
+    let mut buf = vec![0u8; len];
+    stream.read_exact(&mut buf)?;
+
+    TcpPacket::decode(&buf).ok_or_else(|| {
+        std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "invalid TCP packet",
+        )
+    })
+}

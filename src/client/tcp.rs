@@ -36,57 +36,41 @@ fn run_receiver(
     proxy: &EventLoopProxy<AppEvent>,
 ) -> Result<bool> {
     let mut len_buf = [0u8; 4];
-
-    // if let Err(e) = tcp.read_exact(&mut len_buf) {
-    //     println!("Connection closed: {e}");
-    //     return Err(e);
-    // }
+    tcp.read_exact(&mut len_buf)?;
 
     let len = u32::from_be_bytes(len_buf) as usize;
-    let mut buffer = vec![0u8; len];
 
-    // if let Err(e) = tcp.read_exact(&mut buffer) {
-    //     println!("Connection closed: {e}");
-    //     return Err(e);
-    // }
-
-    // println!("{}", String::from_utf8_lossy(&buffer));
+    let mut buf = vec![0u8; len];
+    tcp.read_exact(&mut buf)?;
 
 
-    let Some(packet) = TcpPacket::decode(&buffer) else {
+
+
+    let Some(packet) = TcpPacket::decode(&buf) else {
+        println!("tcp packet receive error");
         return Ok(true);
     };
 
     match packet {
-        TcpPacket::AuthAccepted => {
-            // shouldn't normally arrive here after login
-        }
-
-        TcpPacket::AuthDenied => {
-            println!("Authentication failed");
-            return Ok(false);
-        }
-
-        TcpPacket::SendUID { uid } => {
-            client_state.uid.store(uid, Ordering::Release);
-        }
-
         TcpPacket::UserJoined { uid, username } => {
-            media_state.write().unwrap().users.insert(uid, username);
+            app_state.write().unwrap().notifications.push_back(format!("{username} joined"));
+            println!("{:?}", app_state.read().unwrap().notifications);
             let _ = proxy.send_event(AppEvent::UserJoined(uid));
         }
 
-        TcpPacket::UserLeft { uid, .. } => {
-            media_state.write().unwrap().users.remove(&uid);
+        TcpPacket::UserLeft { uid, username } => {
+            app_state.write().unwrap().notifications.push_back(format!("{username} left"));
             let _ = proxy.send_event(AppEvent::UserLeft(uid));
         }
 
         TcpPacket::StreamStarted { uid, username } => {
+            app_state.write().unwrap().notifications.push_back(format!("{username} started streaming"));
             app_state.write().unwrap().available_streams.insert(uid, super::ui::state::StreamInfo { uid, username, resolution: (1980, 1020), fps: (60) });
             let _ = proxy.send_event(AppEvent::StreamStarted(uid));
         }
 
         TcpPacket::StreamStopped { uid, username } => {
+            app_state.write().unwrap().notifications.push_back(format!("{username} stopped streaming"));
             app_state.write().unwrap().available_streams.remove(&uid);
             let _ = proxy.send_event(AppEvent::StreamStopped(uid));
         }
@@ -94,6 +78,8 @@ fn run_receiver(
         TcpPacket::Error { error } => {
             eprintln!("{error}");
         }
+
+        _ => {}
     }
 
 
