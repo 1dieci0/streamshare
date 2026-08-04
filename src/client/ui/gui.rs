@@ -237,11 +237,18 @@ impl Gui {
                     if ui.button("Stop streaming").clicked(){
                         client_state.set_command(ClientCommand::StopStream);
                     };
-                    // if ui.button("Disconnect").clicked(){
-                    //     client_state.set_command(ClientCommand::Disconnect);
-                    // };
 
-                    let streams = media_state.stream_ids();
+                    // let streams = media_state.stream_ids();
+
+                    let streams: Vec<u64> = {
+                        let state = app_state.read().unwrap();
+
+                        state.available_streams
+                            .keys()
+                            .copied()
+                            .collect()
+                    };
+
 
                     for uid in streams {
                         if ui.button(format!("Watch {uid}")).clicked() {

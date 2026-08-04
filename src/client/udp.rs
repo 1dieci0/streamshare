@@ -75,7 +75,7 @@ fn run_receiver(
     let (len, _) = udp.recv_from(&mut buf)?;
 
     let Some(packet) = UdpPacket::decode(&buf[..len]) else {
-        println!("problema pacchetto");
+        eprintln!("UDP Packet decode error");
         return Ok(true);
     };
     match packet {

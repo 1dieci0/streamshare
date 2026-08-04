@@ -47,14 +47,14 @@ fn run_receiver(
 
 
     let Some(packet) = TcpPacket::decode(&buf) else {
-        println!("tcp packet receive error");
+        eprintln!("tcp packet receive error");
         return Ok(true);
     };
 
     match packet {
         TcpPacket::UserJoined { uid, username } => {
             app_state.write().unwrap().notifications.push_back(format!("{username} joined"));
-            println!("{:?}", app_state.read().unwrap().notifications);
+            // println!("{:?}", app_state.read().unwrap().notifications);
             let _ = proxy.send_event(AppEvent::UserJoined(uid));
         }
 
@@ -72,6 +72,12 @@ fn run_receiver(
         TcpPacket::StreamStopped { uid, username } => {
             app_state.write().unwrap().notifications.push_back(format!("{username} stopped streaming"));
             app_state.write().unwrap().available_streams.remove(&uid);
+            {
+                let mut app_state = app_state.write().unwrap();
+                if app_state.selected_stream == Some(uid){
+                    app_state.selected_stream = None;
+                }
+            }
             let _ = proxy.send_event(AppEvent::StreamStopped(uid));
         }
 

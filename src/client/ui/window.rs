@@ -61,6 +61,7 @@ impl App {
 
 
         let Some(frame) = self.media_state.incoming(uid) else {
+            eprintln!("{uid} is not streaming");
             return;
         };
 
@@ -74,10 +75,12 @@ impl App {
 
 
         let Some(pixels) = self.pixels.as_mut() else {
+            eprintln!("Pixels error while drawing stream");
             return;
         };
 
         let Some(window) = self.window.as_ref() else {
+            eprintln!("Window error while drawing stream");
             return;
         };
 
@@ -310,13 +313,13 @@ impl ApplicationHandler<AppEvent> for App {
             }
 
 
-            AppEvent::StreamStarted(uid)=>{
+            AppEvent::StreamStarted(_)=>{
                 if let Some(window)=&self.window {
                     window.request_redraw();
                 }
             }
 
-            AppEvent::StreamStopped(uid)=>{
+            AppEvent::StreamStopped(_)=>{
                 if let Some(window)=&self.window {
                     window.request_redraw();
                 }
