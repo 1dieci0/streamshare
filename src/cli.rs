@@ -15,31 +15,14 @@ pub enum Commands {
 
     /// Start the client
     Client {
-        /// username
         #[arg(long)]
-        username: String,
-        /// Server address
-        #[arg(long)]
-        address: String,
-
-        /// TCP port
-        #[arg(long)]
-        tcp_port: u16,
-
-        /// UDP port
-        #[arg(long)]
-        udp_port: u16,
+        config_path: String,
     },
 
 
     /// Start the server
     Server {
-        /// TCP port
         #[arg(long)]
-        tcp_port: u16,
-
-        /// UDP port
-        #[arg(long)]
-        udp_port: u16,
+        config_path: String,
     },
 }
