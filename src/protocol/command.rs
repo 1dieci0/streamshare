@@ -1,3 +1,4 @@
+
 pub trait Packet: Sized{
     fn encode(&self) -> Vec<u8>;
     fn decode(buf: &[u8]) -> Option<Self>;
@@ -25,6 +26,7 @@ pub enum ClientPacket {
     Disconnect,
 }
 
+#[derive(Clone)] 
 pub enum ServerPacket {
     AuthAccepted{
         uid: u64,
