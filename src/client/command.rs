@@ -28,6 +28,11 @@ pub enum ClientEvent {
         frame: crate::protocol::video::VideoPacket,
     },
 
+    InitialState { 
+        users: Vec<crate::protocol::info::UserInfo>,
+        streams: Vec<crate::protocol::info::StreamInfo>,
+    },
+
     Error(String),
 
     Disconnected,

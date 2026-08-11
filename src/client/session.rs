@@ -166,6 +166,10 @@ impl ClientSession {
                                         username,
                                     },
 
+                                ServerPacket::InitialState { users, streams } => {
+                                    ClientEvent::InitialState { users, streams }
+                                },
+
                                 ServerPacket::Error { error } =>
                                     ClientEvent::Error(error),
 

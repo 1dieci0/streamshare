@@ -9,6 +9,7 @@ use anyhow::anyhow;
 use quinn::{ClientConfig, SendStream, RecvStream};
 use winit::event;
 
+use crate::protocol::info::{StreamInfo, UserInfo};
 use crate::{network::{self, stream::{receive_packet, send_packet}}, protocol::command::{ClientPacket, ServerPacket}};
 
 use tokio::sync::mpsc;
@@ -18,6 +19,10 @@ struct ClientConnection {
     uid: u64,
     username: String,
     event_tx: mpsc::Sender<ServerPacket>,
+
+    pub streaming: bool,
+
+    pub watching: Option<u64>,
 }
 
 pub struct ServerState {
@@ -108,7 +113,7 @@ impl Server{
 
         let (event_tx, mut event_rx) = mpsc::channel::<ServerPacket>(128);
 
-        {
+        let snapshot = {
             let mut state = self.state.write().await;
 
             state.clients.insert(
@@ -117,9 +122,36 @@ impl Server{
                     uid,
                     username: username.clone(),
                     event_tx: event_tx.clone(),
+                    streaming: false,
+                    watching: None,
                 }
             );
-        }
+
+            let users = state.clients
+                .values()
+                .map(|client| UserInfo {
+                    uid: client.uid,
+                    username: client.username.clone(),
+                })
+                .collect();
+
+            let streams = state.clients
+                .values()
+                .filter(|client| client.streaming)
+                .map(|client| StreamInfo {
+                    uid: client.uid,
+                    username: client.username.clone(),
+                })
+                .collect();
+
+            (users, streams)
+
+        };
+
+        send_packet(&mut send, &ServerPacket::InitialState { users: snapshot.0, streams: snapshot.1 }).await?;
+        
+
+        
 
         self.broadcast(
             ServerPacket::UserJoined { uid, username: username.clone() }, 
@@ -149,11 +181,14 @@ impl Server{
                 }
             };
 
-            self.handle_command(
+            if let Err(e) =  self.handle_command(
                 uid,
                 username.clone(),
                 packet,
-            ).await?;
+            ).await {
+                    println!("Error: {e}");
+                    break;
+            }
         }
 
         {
@@ -247,7 +282,7 @@ impl Server{
             }
 
             ClientPacket::Disconnect => {
-                return Err(anyhow::anyhow!("user wants to disconnect"))
+                return Err(anyhow::anyhow!("user {uid} {username} wants to disconnect"))
             }
 
             ClientPacket::WatchStream { uid } => {

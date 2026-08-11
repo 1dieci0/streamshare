@@ -134,6 +134,18 @@ impl App {
                 self.ui_dirty = true;
             }
 
+            ClientEvent::InitialState { users, streams } => {
+                for user in users{
+                    self.users.insert(user.uid, user.username);
+                }
+
+                for stream in streams{
+                    self.streams.insert(stream.uid, stream.username);
+                }
+                
+                self.ui_dirty = true;
+            }
+
             ClientEvent::VideoFrame{frame} => {
                 self.frames.insert(frame.uid, frame);
 
