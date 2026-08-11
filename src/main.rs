@@ -7,7 +7,7 @@ use client::Client;
 mod cli;
 use cli::{Args, Commands};
 mod protocol;
-//mod media;
+mod media;
 mod ui;
 
 mod network;

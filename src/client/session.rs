@@ -1,9 +1,11 @@
+use std::sync::{Arc};
+
 use tokio::sync::mpsc;
 use quinn::{RecvStream, SendStream};
 
 use anyhow::anyhow;
 
-use crate::{client::{command::{ClientCommand, ClientEvent}, endpoint}, network::stream::{receive_packet, send_packet}, protocol::command::{ClientPacket, ServerPacket}};
+use crate::{client::{command::{ClientCommand, ClientEvent}, endpoint}, media::{decoder::VideoDecoder, encoder::EncodedFrame, reassembler::VideoReassembler, state::Media}, network::{datagram::send_frame, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}};
 
 use super::config::ClientConfig;
 
@@ -18,9 +20,11 @@ impl ClientSession {
 
     pub async fn connect(
         config: &ClientConfig,
+        media: Arc<crate::media::state::Media>,
         command_rx: mpsc::Receiver<ClientCommand>,
         event_tx: mpsc::Sender<ClientEvent>,
-    ) -> anyhow::Result<Self> {
+        mut video_rx: mpsc::Receiver<EncodedFrame>,
+    ) -> anyhow::Result<(Self, u64)> {
         let server_addr = config.server_addr()?;
 
         let endpoint =
@@ -62,19 +66,30 @@ impl ClientSession {
 
         println!("Authed with UID {uid}");
 
-        //let (command_tx, command_rx) = mpsc::channel::<ClientPacket>(64);
-
-        Self::spawn_sender(send, command_rx);
+        Self::spawn_sender(media.clone(), send, command_rx);
 
         Self::spawn_receiver(recv, event_tx.clone());
 
-        Ok(Self {
+        Self::spawn_video_sender(
+            connection.clone(),
+            uid,
+            video_rx,
+        );
+
+        Self::spawn_video_receiver(
+            connection.clone(),
+            media.clone(),
+        );
+
+
+        Ok((Self {
             connection,
             //command_tx,
-        })
+        }, uid))
     }
 
     fn spawn_sender(
+        media: Arc<crate::media::state::Media>,
         mut send: SendStream,
         mut command_rx: mpsc::Receiver<ClientCommand>,
     ) {
@@ -85,11 +100,17 @@ impl ClientSession {
             {
                 let packet = match command {
 
-                    ClientCommand::StartStream =>
-                        ClientPacket::StreamStarted,
+                    ClientCommand::StartStream => {
+                        media.start_streaming();
 
-                    ClientCommand::StopStream =>
-                        ClientPacket::StreamStopped,
+                        ClientPacket::StreamStarted
+                    },
+
+                    ClientCommand::StopStream => {
+                        media.stop_streaming();
+
+                        ClientPacket::StreamStopped
+                    }
 
                     ClientCommand::WatchStream { uid } =>
                         ClientPacket::WatchStream { uid },
@@ -194,6 +215,101 @@ impl ClientSession {
                         );
 
                         break;
+                    }
+                }
+            }
+        });
+    }
+
+    fn spawn_video_sender(
+        connection: quinn::Connection,
+        uid: u64,
+        mut video_rx: mpsc::Receiver<EncodedFrame>,
+    ) {
+        tokio::spawn(async move {
+            while let Some(frame) = video_rx.recv().await {
+                let packets = crate::media::encoder::packetize(uid, &frame);
+
+                for packet in packets {
+                    let data = packet.encode();
+
+                    match connection.send_datagram(data.into()) {
+                        Ok(()) => {}
+
+                        Err(quinn::SendDatagramError::UnsupportedByPeer) => {
+                            eprintln!("peer does not support QUIC datagrams");
+                            return;
+                        }
+
+                        Err(quinn::SendDatagramError::Disabled) => {
+                            eprintln!("QUIC datagrams are disabled");
+                            return;
+                        }
+
+                        Err(quinn::SendDatagramError::TooLarge) => {
+                            eprintln!("video datagram too large");
+                            continue;
+                        }
+
+                        Err(quinn::SendDatagramError::ConnectionLost(e)) => {
+                            eprintln!("connection lost while sending video: {e}");
+                            return;
+                        }
+                    }
+                }
+            }
+        });
+    }
+
+    
+    fn spawn_video_receiver(
+        connection: quinn::Connection,
+        media: Arc<Media>,
+    ) {
+        tokio::spawn(async move {
+            let mut reassembler = VideoReassembler::new();
+
+            let mut decoder = match VideoDecoder::new() {
+                Ok(decoder) => decoder,
+                Err(e) => {
+                    eprintln!("failed to initialize H264 decoder: {e}");
+                    return;
+                }
+            };
+
+            loop {
+                let data = match connection.read_datagram().await {
+                    Ok(data) => data,
+
+                    Err(e) => {
+                        eprintln!("video receive error: {e}");
+                        break;
+                    }
+                };
+
+                let Some(packet) = VideoPacket::decode(&data) else {
+                    eprintln!("invalid video packet");
+                    continue;
+                };
+
+                if let Some(frame) = reassembler.push(packet) {
+                    match decoder.decode_frame(&frame) {
+                        Ok(Some(raw_frame)) => {
+                            println!(
+                                "decoded frame {} ({}x{})",
+                                raw_frame.sequence,
+                                raw_frame.width,
+                                raw_frame.height
+                            );
+
+                            // TODO: deliver raw_frame to renderer
+                        }
+
+                        Ok(None) => {}
+
+                        Err(e) => {
+                            eprintln!("H264 decode error: {e}");
+                        }
                     }
                 }
             }

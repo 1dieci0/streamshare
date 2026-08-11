@@ -1,4 +1,4 @@
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, atomic::AtomicBool};
 
 mod endpoint;
 pub mod config;
@@ -12,18 +12,13 @@ use anyhow::{Ok, anyhow};
 use config::ClientConfig;
 
 use crate::{
-    client::session::ClientSession, 
-    //media,
-    network::{self, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}, server::Server, ui};
+    client::session::ClientSession, media::{capture, state::Media}, network::{self, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}, server::Server, ui};
 
 
 pub struct Client {
 
     pub config: ClientConfig,
-    
-    // pub client_state: Arc<state::ClientState>,
-    // pub app_state: Arc<RwLock<ui::state::AppState>>,
-    // pub media_state: Arc<media::state::MediaState>,
+    pub media: Arc<Media>,
 }
 
 
@@ -33,31 +28,31 @@ impl Client {
         
         Ok(Self{
             config,
-            // client_state: Arc::new(state::ClientState::new()),
-            // app_state: Arc::new(RwLock::new(ui::state::AppState::new())),
-            // media_state: Arc::new((media::state::MediaState::new())),
+            media: Arc::new(Media::new()),
         })
     }
 
     pub async fn start(&self) -> anyhow::Result<()>{
 
-        let (command_tx, command_rx) = tokio::sync::mpsc::channel(128);
-        let (event_tx, event_rx) = tokio::sync::mpsc::channel(128);
+        let (command_tx, command_rx) = 
+            tokio::sync::mpsc::channel(128);
+        let (event_tx, event_rx) = 
+            tokio::sync::mpsc::channel(128);
+        let (video_tx, video_rx) = 
+            tokio::sync::mpsc::channel(8);
 
 
-        let session = ClientSession::connect(
+        let (_session, uid) = ClientSession::connect(
             &self.config,
+            self.media.clone(),
             command_rx,
             event_tx,
+            video_rx,
         ).await?;
 
-        // let ui = ui::new(
-        //     session.command_tx.clone(),
-        // );
+        capture::start_capture(self.media.clone(), video_tx);
 
-        // ui.run().await?;
-
-        let ui = ui::start(
+        ui::start(
             command_tx,
             event_rx,
         );

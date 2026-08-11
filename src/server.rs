@@ -1,6 +1,7 @@
 use std::{
     collections::HashMap, net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, UdpSocket}, path::Path, sync::{Arc, atomic::{AtomicU64, Ordering}}, thread,
 };
+use bytes::Bytes;
 
 mod endpoint;
 mod config;
@@ -9,7 +10,7 @@ use anyhow::anyhow;
 use quinn::{ClientConfig, SendStream, RecvStream};
 use winit::event;
 
-use crate::protocol::info::{StreamInfo, UserInfo};
+use crate::protocol::{info::{StreamInfo, UserInfo}, video::VideoPacket};
 use crate::{network::{self, stream::{receive_packet, send_packet}}, protocol::command::{ClientPacket, ServerPacket}};
 
 use tokio::sync::mpsc;
@@ -19,7 +20,7 @@ struct ClientConnection {
     uid: u64,
     username: String,
     event_tx: mpsc::Sender<ServerPacket>,
-
+    connection: quinn::Connection,
     pub streaming: bool,
 
     pub watching: Option<u64>,
@@ -100,7 +101,7 @@ impl Server{
     }
 
     async fn handle_connection(
-        &self,
+        self: Arc<Self>,
         connection: quinn::Connection,
     ) -> anyhow::Result<()> {
 
@@ -109,7 +110,7 @@ impl Server{
             
         let (uid, username) = self.login(&mut send, &mut recv).await?;
 
-        println!("client authed");
+        println!("client {uid} authed");
 
         let (event_tx, mut event_rx) = mpsc::channel::<ServerPacket>(128);
 
@@ -122,6 +123,7 @@ impl Server{
                     uid,
                     username: username.clone(),
                     event_tx: event_tx.clone(),
+                    connection: connection.clone(),
                     streaming: false,
                     watching: None,
                 }
@@ -159,7 +161,6 @@ impl Server{
         ).await;
 
 
-
         let send_task = tokio::spawn(async move {
             while let Some(packet) = event_rx.recv().await {
                 if let Err(e) = send_packet(&mut send, &packet).await {
@@ -167,6 +168,18 @@ impl Server{
                     break;
                 }
             }
+        });
+
+        let video_server = Arc::clone(&self);
+        let video_connection = connection.clone();
+
+        let datagram_task = tokio::spawn(async move {
+            video_server
+                .handle_video_datagrams(
+                    video_connection,
+                    uid
+                )
+                .await;
         });
 
 
@@ -194,6 +207,11 @@ impl Server{
         {
             let mut state = self.state.write().await;
             state.clients.remove(&uid);
+            for viewer in state.clients.values_mut() {
+                if viewer.watching == Some(uid) {
+                    viewer.watching = None;
+                }
+            }
         }
 
         // Notify everyone else.
@@ -208,6 +226,7 @@ impl Server{
 
         // Stop sender task.
         send_task.abort();
+        datagram_task.abort();
 
         Ok(())
 
@@ -259,10 +278,15 @@ impl Server{
     ) -> anyhow::Result<()> {
         match packet {
             ClientPacket::StreamStarted => {
-                println!("{uid} -> StartStream");
+                let mut state = self.state.write().await;
 
-                // TODO: tell media subsystem to start
-                // TODO: later create/use QUIC datagram path
+                let client = state.clients
+                    .get_mut(&uid)
+                    .ok_or_else(|| anyhow!("client not found"))?;
+
+                client.streaming = true;
+
+                drop(state);
 
                 self.broadcast(
                     ServerPacket::StreamStarted { uid, username },
@@ -271,9 +295,22 @@ impl Server{
             }
 
             ClientPacket::StreamStopped => {
-                println!("{uid} -> StopStream");
+                let mut state = self.state.write().await;
 
-                // TODO: tell media subsystem to stop
+                let client = state.clients
+                    .get_mut(&uid)
+                    .ok_or_else(|| anyhow!("client not found"))?;
+
+                client.streaming = false;
+
+                // Anyone watching this stream must stop watching it.
+                for viewer in state.clients.values_mut() {
+                    if viewer.watching == Some(uid) {
+                        viewer.watching = None;
+                    }
+                }
+
+                drop(state);
 
                 self.broadcast(
                     ServerPacket::StreamStopped { uid, username },
@@ -285,12 +322,37 @@ impl Server{
                 return Err(anyhow::anyhow!("user {uid} {username} wants to disconnect"))
             }
 
-            ClientPacket::WatchStream { uid } => {
+            ClientPacket::WatchStream { uid: stream_uid } => {
+                let mut state = self.state.write().await;
 
+                let stream_exists = state.clients
+                    .get(&stream_uid)
+                    .map(|client| client.streaming)
+                    .unwrap_or(false);
+
+                if !stream_exists {
+                    return Err(anyhow!(
+                        "stream {stream_uid} does not exist"
+                    ));
+                }
+
+                let viewer = state.clients
+                    .get_mut(&uid)
+                    .ok_or_else(|| anyhow!("viewer {uid} not found"))?;
+
+                viewer.watching = Some(stream_uid);
             }
 
-            ClientPacket::LeaveStream { uid } => {
+            ClientPacket::LeaveStream { uid: stream_uid } => {
+                let mut state = self.state.write().await;
 
+                let viewer = state.clients
+                    .get_mut(&uid)
+                    .ok_or_else(|| anyhow!("viewer {uid} not found"))?;
+
+                if viewer.watching == Some(stream_uid) {
+                    viewer.watching = None;
+                }
             }
 
             ClientPacket::Authenticate { .. } => {
@@ -326,6 +388,52 @@ impl Server{
 
         for tx in senders {
             let _ = tx.send(packet.clone()).await;
+        }
+    }
+
+
+    async fn handle_video_datagrams(
+        &self,
+        connection: quinn::Connection,
+        source_uid: u64,
+    ) {
+        loop {
+            let datagram = match connection.read_datagram().await {
+                Ok(datagram) => datagram,
+
+                Err(e) => {
+                    eprintln!(
+                        "video datagram receive error for {source_uid}: {e}"
+                    );
+                    break;
+                }
+            };
+
+            self.relay_video_datagram(source_uid, datagram).await;
+        }
+    }
+
+    async fn relay_video_datagram(
+        &self,
+        source_uid: u64,
+        datagram: Bytes,
+    ) {
+        let viewers = {
+            let state = self.state.read().await;
+
+            state.clients
+                .values()
+                .filter(|client| {
+                    client.watching == Some(source_uid)
+                })
+                .map(|client| client.connection.clone())
+                .collect::<Vec<_>>()
+        };
+
+        for connection in viewers {
+            if let Err(e) = connection.send_datagram(datagram.clone()) {
+                eprintln!("failed to relay video datagram: {e}");
+            }
         }
     }
 
