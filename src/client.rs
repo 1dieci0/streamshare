@@ -12,7 +12,7 @@ use anyhow::{Ok, anyhow};
 use config::ClientConfig;
 
 use crate::{
-    client::session::ClientSession, media::{capture, state::Media}, network::{self, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}, server::Server, ui};
+    client::session::ClientSession, media::{capture, frame::RawFrame, state::Media}, network::{self, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}, server::Server, ui};
 
 
 pub struct Client {
@@ -38,8 +38,10 @@ impl Client {
             tokio::sync::mpsc::channel(128);
         let (event_tx, event_rx) = 
             tokio::sync::mpsc::channel(128);
-        let (video_tx, video_rx) = 
+        let (my_video_tx, my_video_rx) = 
             tokio::sync::mpsc::channel(8);
+
+        let (others_video_tx, others_video_rx) = tokio::sync::mpsc::channel::<RawFrame>(8);
 
 
         let (_session, uid) = ClientSession::connect(
@@ -47,14 +49,16 @@ impl Client {
             self.media.clone(),
             command_rx,
             event_tx,
-            video_rx,
+            my_video_rx,
+            others_video_tx,
         ).await?;
 
-        capture::start_capture(self.media.clone(), video_tx);
+        capture::start_capture(self.media.clone(), my_video_tx);
 
         ui::start(
             command_tx,
             event_rx,
+            others_video_rx,
         );
 
 

@@ -24,10 +24,6 @@ pub enum ClientEvent {
         username: String,
     },
 
-    VideoFrame{
-        frame: crate::protocol::video::VideoPacket,
-    },
-
     InitialState { 
         users: Vec<crate::protocol::info::UserInfo>,
         streams: Vec<crate::protocol::info::StreamInfo>,

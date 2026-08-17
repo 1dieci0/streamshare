@@ -130,7 +130,6 @@ pub fn start_capture(
                     frame.timestamp =
                         stream_start.elapsed().as_micros() as u64;
 
-                    sequence += 1;
 
                     // -------------------------------------------------
                     // H264 encode
@@ -144,13 +143,19 @@ pub fn start_capture(
                             continue;
                         }
                     };
+                    
+                    if encoded.data.is_empty(){
+                        continue;
+                    }
 
-                    println!(
-                        "ENCODED frame={} bytes={} keyframe={}",
-                        encoded.sequence,
-                        encoded.data.len(),
-                        encoded.keyframe
-                    );
+                    sequence += 1;
+
+                    // println!(
+                    //     "ENCODED frame={} bytes={} keyframe={}",
+                    //     encoded.sequence,
+                    //     encoded.data.len(),
+                    //     encoded.keyframe
+                    // );
 
                     // -------------------------------------------------
                     // Send to video pipeline

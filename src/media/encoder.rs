@@ -1,7 +1,6 @@
-use std::time::Instant;
-
 use openh264::{
-    encoder::Encoder,
+    OpenH264API,
+    encoder::{Encoder, EncoderConfig, IntraFramePeriod},
     formats::{RgbSliceU8, YUVBuffer},
 };
 
@@ -15,6 +14,7 @@ use crate::{
 /// The exact value should eventually be based on the QUIC path MTU.
 /// 1150 is a conservative starting point.
 pub const MAX_VIDEO_PAYLOAD: usize = 1150;
+
 
 pub struct EncodedFrame {
     pub sequence: u64,
@@ -32,8 +32,10 @@ pub struct VideoEncoder {
 
 impl VideoEncoder {
     pub fn new() -> Result<Self, openh264::Error> {
+        let api = OpenH264API::from_source();
+        let config = EncoderConfig::new().intra_frame_period(IntraFramePeriod::from_num_frames(60));
         Ok(Self {
-            encoder: Encoder::new()?,
+            encoder: Encoder::with_api_config(api, config)?,
         })
     }
 
@@ -44,6 +46,9 @@ impl VideoEncoder {
         // scrap gives us BGRA.
         //
         // openh264::formats::RgbSliceU8 expects RGB.
+
+        let sequence = frame.sequence;
+
         let rgb: Vec<u8> = frame
             .data
             .chunks_exact(4)
@@ -69,12 +74,14 @@ impl VideoEncoder {
 
         bitstream.write_vec(&mut data);
 
+        let keyframe = contains_idr(&data);
+        
+
         Ok(EncodedFrame {
-            sequence: frame.sequence,
+            sequence,
             timestamp: frame.timestamp,
-            // We will fix this properly once we handle
-            // openh264's actual frame type / NAL information.
-            keyframe: false,
+
+            keyframe,
 
             codec: VideoCodec::H264,
 
@@ -85,28 +92,31 @@ impl VideoEncoder {
         })
     }
 
-    pub fn encode_and_packetize(
-        &mut self,
-        uid: u64,
-        frame: &RawFrame,
-    ) -> Result<Vec<VideoPacket>, openh264::Error> {
-        let encoded = self.encode_frame(frame)?;
+    // pub fn encode_and_packetize(
+    //     &mut self,
+    //     uid: u64,
+    //     frame: &RawFrame,
+    // ) -> Result<Vec<VideoPacket>, openh264::Error> {
+    //     let encoded = self.encode_frame(frame)?;
 
-        Ok(packetize(uid, &encoded))
-    }
+    //     Ok(packetize(uid, &encoded))
+    // }
 }
 
 pub fn packetize(
     uid: u64,
     frame: &EncodedFrame,
 ) -> Vec<VideoPacket> {
+
+    if frame.data.is_empty(){
+        return Vec::new();
+    }
+
     let packet_total = frame
         .data
         .len()
-        .div_ceil(MAX_VIDEO_PAYLOAD).
-        max(1);
+        .div_ceil(MAX_VIDEO_PAYLOAD);
 
-    debug_assert!(packet_total <= u16::MAX as usize);
 
     frame
         .data
@@ -134,4 +144,33 @@ pub fn packetize(
             }
         })
         .collect()
+}
+
+fn contains_idr(data: &[u8]) -> bool {
+    let mut i = 0;
+
+    while i + 4 < data.len() {
+        let start_code_len = if data[i..].starts_with(&[0, 0, 0, 1]) {
+            4
+        } else if data[i..].starts_with(&[0, 0, 1]) {
+            3
+        } else {
+            i += 1;
+            continue;
+        };
+
+        let nal_start = i + start_code_len;
+
+        if nal_start < data.len() {
+            let nal_type = data[nal_start] & 0x1F;
+
+            if nal_type == 5 {
+                return true;
+            }
+        }
+
+        i = nal_start;
+    }
+
+    false
 }

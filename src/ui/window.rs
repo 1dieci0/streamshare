@@ -15,22 +15,21 @@ use winit::{
 };
 
 use crate::{
-    client::command::{ClientCommand, ClientEvent},
-    protocol::video::VideoPacket,
-    ui::gui::Framework,
+    client::command::{ClientCommand, ClientEvent}, media::frame::RawFrame, protocol::video::VideoPacket, ui::gui::Framework,
 };
 
 pub struct App {
     // Communication with the client/network layer.
     command_tx: Sender<ClientCommand>,
     event_rx: Receiver<ClientEvent>,
+    video_rx: Receiver<RawFrame>,
 
     // UI-owned state.
     users: HashMap<u64, String>,
     streams: HashMap<u64, String>,
 
     // Latest frame received for each stream.
-    frames: HashMap<u64, VideoPacket>,
+    latest_frame: Option<RawFrame>,
 
     // Currently selected stream.
     selected_stream: Option<u64>,
@@ -47,14 +46,16 @@ impl App {
     pub fn new(
         command_tx: Sender<ClientCommand>,
         event_rx: Receiver<ClientEvent>,
+        mut video_rx: Receiver<RawFrame>,
     ) -> Self {
         Self {
             command_tx,
             event_rx,
+            video_rx,
 
             users: HashMap::new(),
             streams: HashMap::new(),
-            frames: HashMap::new(),
+            latest_frame: None,
 
             selected_stream: None,
 
@@ -102,7 +103,7 @@ impl App {
             } => {
                 self.users.remove(&uid);
                 self.streams.remove(&uid);
-                self.frames.remove(&uid);
+                self.latest_frame = None;
 
                 if self.selected_stream == Some(uid) {
                     self.selected_stream = None;
@@ -125,7 +126,7 @@ impl App {
                 ..
             } => {
                 self.streams.remove(&uid);
-                self.frames.remove(&uid);
+                self.latest_frame = None;
 
                 if self.selected_stream == Some(uid) {
                     self.selected_stream = None;
@@ -144,14 +145,6 @@ impl App {
                 }
                 
                 self.ui_dirty = true;
-            }
-
-            ClientEvent::VideoFrame{frame} => {
-                self.frames.insert(frame.uid, frame);
-
-                if let Some(window) = &self.window {
-                    window.request_redraw();
-                }
             }
 
             ClientEvent::Error(error) => {
@@ -179,11 +172,11 @@ impl App {
     }
 
     fn draw_video(&mut self) {
-        let Some(uid) = self.selected_stream else {
-            return;
-        };
+        // let Some(uid) = self.selected_stream else {
+        //     return;
+        // };
 
-        let Some(frame) = self.frames.get(&uid) else {
+        let Some(frame) = self.latest_frame.as_ref() else{
             return;
         };
 
@@ -338,6 +331,17 @@ impl App {
         self.handle_command(
             ClientCommand::Disconnect
         );
+    }
+
+
+    fn process_video(&mut self) {
+        while let Ok(frame) = self.video_rx.try_recv() {
+            self.latest_frame = Some(frame);
+
+            if let Some(window) = &self.window {
+                window.request_redraw();
+            }
+        }
     }
 }
 
@@ -567,6 +571,7 @@ impl ApplicationHandler for App {
         // Network events are delivered through Tokio's
         // channel. Drain everything currently available.
         self.process_events();
+        self.process_video();
 
         let Some(window) = &self.window else {
             return;

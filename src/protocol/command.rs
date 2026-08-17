@@ -140,7 +140,6 @@ impl Packet for ClientPacket {
         match buf[0] {
 
             packet_id::CLIENT_AUTHENTICATE => {
-                println!("test");
                 // if buf.len() < 5 {
                 //     return None;
                 // }
@@ -161,8 +160,6 @@ impl Packet for ClientPacket {
                 buf = &buf[1..];
 
                 let username = read_string(&mut buf)?;
-                println!("test2");
-
                 // let password_len_start =
                 //     3 + username_len;
 
@@ -195,8 +192,6 @@ impl Packet for ClientPacket {
                 //     ).ok()?;
 
                 let password = read_string(&mut buf)?;
-                println!("test3");
-
 
                 Some(Self::Authenticate {
                     username,

@@ -3,9 +3,8 @@ use std::sync::{Arc};
 use tokio::sync::mpsc;
 use quinn::{RecvStream, SendStream};
 
-use anyhow::anyhow;
 
-use crate::{client::{command::{ClientCommand, ClientEvent}, endpoint}, media::{decoder::VideoDecoder, encoder::EncodedFrame, reassembler::VideoReassembler, state::Media}, network::{datagram::send_frame, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}};
+use crate::{client::{command::{ClientCommand, ClientEvent}, endpoint}, media::{decoder::VideoDecoder, encoder::EncodedFrame, frame::RawFrame, reassembler::VideoReassembler, state::Media}, network::{datagram::send_frame, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}};
 
 use super::config::ClientConfig;
 
@@ -23,7 +22,8 @@ impl ClientSession {
         media: Arc<crate::media::state::Media>,
         command_rx: mpsc::Receiver<ClientCommand>,
         event_tx: mpsc::Sender<ClientEvent>,
-        mut video_rx: mpsc::Receiver<EncodedFrame>,
+        my_video_rx: mpsc::Receiver<EncodedFrame>,
+        others_video_tx: mpsc::Sender<RawFrame>,
     ) -> anyhow::Result<(Self, u64)> {
         let server_addr = config.server_addr()?;
 
@@ -73,12 +73,12 @@ impl ClientSession {
         Self::spawn_video_sender(
             connection.clone(),
             uid,
-            video_rx,
+            my_video_rx,
         );
 
         Self::spawn_video_receiver(
             connection.clone(),
-            media.clone(),
+            others_video_tx,
         );
 
 
@@ -264,7 +264,7 @@ impl ClientSession {
     
     fn spawn_video_receiver(
         connection: quinn::Connection,
-        media: Arc<Media>,
+        video_tx: mpsc::Sender<RawFrame>,
     ) {
         tokio::spawn(async move {
             let mut reassembler = VideoReassembler::new();
@@ -280,32 +280,51 @@ impl ClientSession {
             loop {
                 let data = match connection.read_datagram().await {
                     Ok(data) => data,
-
                     Err(e) => {
                         eprintln!("video receive error: {e}");
                         break;
                     }
                 };
 
+                // println!("received datagram: {} bytes", data.len());
+
                 let Some(packet) = VideoPacket::decode(&data) else {
                     eprintln!("invalid video packet");
                     continue;
                 };
 
+                // println!(
+                //     "packet frame={} {}/{}",
+                //     packet.frame_id,
+                //     packet.packet_index + 1,
+                //     packet.packet_total
+                // );
+
                 if let Some(frame) = reassembler.push(packet) {
+                    // println!(
+                    //     "REASSEMBLED frame {} ({} bytes)",
+                    //     frame.sequence,
+                    //     frame.data.len()
+                    // );
+
                     match decoder.decode_frame(&frame) {
                         Ok(Some(raw_frame)) => {
-                            println!(
-                                "decoded frame {} ({}x{})",
-                                raw_frame.sequence,
-                                raw_frame.width,
-                                raw_frame.height
-                            );
+                            // println!(
+                            //     "decoded frame {} ({}x{})",
+                            //     raw_frame.sequence,
+                            //     raw_frame.width,
+                            //     raw_frame.height
+                            // );
 
-                            // TODO: deliver raw_frame to renderer
+                            if video_tx.send(raw_frame).await.is_err() {
+                                eprintln!("video renderer channel closed");
+                                break;
+                            }
                         }
 
-                        Ok(None) => {}
+                        Ok(None) => {
+                            println!("decoder returned None");
+                        }
 
                         Err(e) => {
                             eprintln!("H264 decode error: {e}");
