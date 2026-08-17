@@ -7,13 +7,14 @@ pub mod packet_id {
     pub const SERVER_STREAM_STOPPED: u8 = 0x07;
     pub const SERVER_ERROR: u8 = 0x08;
     pub const SERVER_INITIAL_STATE: u8 = 0x09;
+    pub const SERVER_WATCH_STREAM: u8 = 0x10;
 
-    pub const CLIENT_AUTHENTICATE: u8 = 0x10;
-    pub const CLIENT_STREAM_START: u8 = 0x11;
-    pub const CLIENT_STREAM_STOP: u8 = 0x12;
-    pub const CLIENT_WATCH_STREAM: u8 = 0x13;
-    pub const CLIENT_LEAVE_STREAM: u8 = 0x14;
-    pub const CLIENT_DISCONNECT: u8 = 0x15;
+    pub const CLIENT_AUTHENTICATE: u8 = 0x20;
+    pub const CLIENT_STREAM_START: u8 = 0x21;
+    pub const CLIENT_STREAM_STOP: u8 = 0x22;
+    pub const CLIENT_WATCH_STREAM: u8 = 0x23;
+    pub const CLIENT_LEAVE_STREAM: u8 = 0x24;
+    pub const CLIENT_DISCONNECT: u8 = 0x25;
 }
 
 
@@ -81,6 +82,13 @@ pub enum ServerPacket {
 
     Error{
         error: String,
+    },
+
+    WatchStream{
+        uid: u64,
+        username: String,
+        stream_uid: u64,
+        stream_username: String,
     }
 }
 
@@ -345,6 +353,16 @@ impl Packet for ServerPacket{
                     put_string(&mut out, &stream.username);
                 }
             }
+
+            Self::WatchStream { uid, username, stream_uid, stream_username } => {
+                out.push(packet_id::SERVER_WATCH_STREAM);
+
+                out.extend_from_slice(&uid.to_be_bytes());
+                put_string(&mut out, username);
+
+                out.extend_from_slice(&stream_uid.to_be_bytes());
+                put_string(&mut out, stream_username);
+            }
         }
 
         out
@@ -566,6 +584,25 @@ impl Packet for ServerPacket{
                 Some(Self::InitialState {
                     users,
                     streams,
+                })
+            }
+
+            packet_id::SERVER_WATCH_STREAM => {
+                buf = &buf[1..];
+
+                let uid = read_u64(&mut buf)?;
+
+                let username = read_string(&mut buf)?;
+
+                let stream_uid = read_u64(&mut buf)?;
+
+                let stream_username = read_string(&mut buf)?;
+
+                Some(Self::WatchStream {
+                    uid,
+                    username,
+                    stream_uid,
+                    stream_username,
                 })
             }
 

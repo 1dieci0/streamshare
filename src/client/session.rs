@@ -1,10 +1,10 @@
 use std::sync::{Arc};
 
-use tokio::sync::mpsc;
+use tokio::{stream, sync::mpsc};
 use quinn::{RecvStream, SendStream};
 
 
-use crate::{client::{command::{ClientCommand, ClientEvent}, endpoint}, media::{decoder::VideoDecoder, encoder::EncodedFrame, frame::RawFrame, reassembler::VideoReassembler, state::Media}, network::{datagram::send_frame, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}};
+use crate::{client::{command::{ClientCommand, ClientEvent, EncoderCommand}, endpoint}, media::{decoder::VideoDecoder, encoder::EncodedFrame, frame::RawFrame, reassembler::VideoReassembler, state::Media}, network::{datagram::send_frame, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}};
 
 use super::config::ClientConfig;
 
@@ -24,6 +24,7 @@ impl ClientSession {
         event_tx: mpsc::Sender<ClientEvent>,
         my_video_rx: mpsc::Receiver<EncodedFrame>,
         others_video_tx: mpsc::Sender<RawFrame>,
+        encoder_tx: mpsc::Sender<EncoderCommand>,
     ) -> anyhow::Result<(Self, u64)> {
         let server_addr = config.server_addr()?;
 
@@ -68,7 +69,7 @@ impl ClientSession {
 
         Self::spawn_sender(media.clone(), send, command_rx);
 
-        Self::spawn_receiver(recv, event_tx.clone());
+        Self::spawn_receiver(uid, recv, event_tx.clone(), encoder_tx);
 
         Self::spawn_video_sender(
             connection.clone(),
@@ -136,85 +137,190 @@ impl ClientSession {
 
 
     fn spawn_receiver(
+        my_uid: u64,
         mut recv: RecvStream,
         event_tx: mpsc::Sender<ClientEvent>,
+        encoder_tx: mpsc::Sender<EncoderCommand>
     ) {
         tokio::spawn(async move {
 
+            // loop {
+            //     match receive_packet::<ServerPacket>(
+            //         &mut recv
+            //     ).await {
+
+            //         Ok(packet) => {
+
+            //             let event =
+            //                 match packet {
+
+            //                     ServerPacket::UserJoined {
+            //                         uid,
+            //                         username,
+            //                     } =>
+            //                         ClientEvent::UserJoined {
+            //                             uid,
+            //                             username,
+            //                         },
+
+            //                     ServerPacket::UserLeft {
+            //                         uid,
+            //                         username,
+            //                     } =>
+            //                         ClientEvent::UserLeft {
+            //                             uid,
+            //                             username,
+            //                         },
+
+            //                     ServerPacket::StreamStarted {
+            //                         uid,
+            //                         username,
+            //                     } =>
+            //                         ClientEvent::StreamStarted {
+            //                             uid,
+            //                             username,
+            //                         },
+
+            //                     ServerPacket::StreamStopped {
+            //                         uid,
+            //                         username,
+            //                     } =>
+            //                         ClientEvent::StreamStopped {
+            //                             uid,
+            //                             username,
+            //                         },
+
+            //                     ServerPacket::InitialState { users, streams } => {
+            //                         ClientEvent::InitialState { users, streams }
+            //                     },
+
+            //                     ServerPacket::Error { error } =>
+            //                         ClientEvent::Error(error),
+
+            //                     ServerPacket::AuthAccepted { .. }
+            //                     | ServerPacket::AuthDenied => {
+            //                         eprintln!(
+            //                             "unexpected authentication packet"
+            //                         );
+
+            //                         continue;
+            //                     },
+
+            //                     ServerPacket::WatchStream {
+            //                         uid,
+            //                         username,
+            //                         stream_uid,
+            //                         stream_username 
+            //                     } => {
+            //                         if 
+            //                     } 
+            //                 };
+
+            //             if event_tx.send(event).await.is_err() {
+            //                 break;
+            //             }
+            //         }
+
+            //         Err(e) => {
+            //             eprintln!(
+            //                 "control receive error: {e}"
+            //             );
+
+            //             break;
+            //         }
+            //     }
+            // }
             loop {
-                match receive_packet::<ServerPacket>(
-                    &mut recv
-                ).await {
+                let packet = match receive_packet::<ServerPacket>(&mut recv).await {
+                    Ok(packet) => packet,
+                    Err(e) => {
+                        eprintln!("control receive error: {e}");
+                        break;
+                    }
+                };
 
-                    Ok(packet) => {
-
-                        let event =
-                            match packet {
-
-                                ServerPacket::UserJoined {
-                                    uid,
-                                    username,
-                                } =>
-                                    ClientEvent::UserJoined {
-                                        uid,
-                                        username,
-                                    },
-
-                                ServerPacket::UserLeft {
-                                    uid,
-                                    username,
-                                } =>
-                                    ClientEvent::UserLeft {
-                                        uid,
-                                        username,
-                                    },
-
-                                ServerPacket::StreamStarted {
-                                    uid,
-                                    username,
-                                } =>
-                                    ClientEvent::StreamStarted {
-                                        uid,
-                                        username,
-                                    },
-
-                                ServerPacket::StreamStopped {
-                                    uid,
-                                    username,
-                                } =>
-                                    ClientEvent::StreamStopped {
-                                        uid,
-                                        username,
-                                    },
-
-                                ServerPacket::InitialState { users, streams } => {
-                                    ClientEvent::InitialState { users, streams }
-                                },
-
-                                ServerPacket::Error { error } =>
-                                    ClientEvent::Error(error),
-
-                                ServerPacket::AuthAccepted { .. }
-                                | ServerPacket::AuthDenied => {
-                                    eprintln!(
-                                        "unexpected authentication packet"
-                                    );
-
-                                    continue;
-                                }
-                            };
-
-                        if event_tx.send(event).await.is_err() {
-                            break;
-                        }
+                match packet {
+                    ServerPacket::UserJoined {
+                        uid,
+                        username,
+                    } => {
+                        let _ = event_tx
+                            .send(ClientEvent::UserJoined { uid, username })
+                            .await;
                     }
 
-                    Err(e) => {
-                        eprintln!(
-                            "control receive error: {e}"
+                    ServerPacket::UserLeft {
+                        uid,
+                        username,
+                    } => {
+                        let _ = event_tx
+                            .send(ClientEvent::UserLeft { uid, username })
+                            .await;
+                    }
+
+                    ServerPacket::StreamStarted {
+                        uid,
+                        username,
+                    } => {
+                        let _ = event_tx
+                            .send(ClientEvent::StreamStarted { uid, username })
+                            .await;
+                    }
+
+                    ServerPacket::StreamStopped {
+                        uid,
+                        username,
+                    } => {
+                        let _ = event_tx
+                            .send(ClientEvent::StreamStopped { uid, username })
+                            .await;
+                    }
+
+                    ServerPacket::InitialState { users, streams } => {
+                        let _ = event_tx
+                            .send(ClientEvent::InitialState { users, streams })
+                            .await;
+                    }
+
+                    ServerPacket::Error { error } => {
+                        let _ = event_tx
+                            .send(ClientEvent::Error(error))
+                            .await;
+                    }
+
+                    ServerPacket::WatchStream {
+                        uid,
+                        username,
+                        stream_uid,
+                        stream_username,
+                    } => {
+                        println!(
+                            "watching stream {} ({})",
+                            stream_uid,
+                            stream_username
                         );
 
-                        break;
+                        if my_uid == stream_uid{
+                            let _ = encoder_tx
+                                .send(EncoderCommand::ForceKeyframe)
+                                .await;
+                        }
+
+
+                        // Optionally also tell the UI.
+                        let _ = event_tx
+                            .send(ClientEvent::WatchStream {
+                                uid,
+                                username,
+                                stream_uid,
+                                stream_username,
+                            })
+                            .await;
+                    }
+
+                    ServerPacket::AuthAccepted { .. }
+                    | ServerPacket::AuthDenied => {
+                        eprintln!("unexpected authentication packet");
                     }
                 }
             }

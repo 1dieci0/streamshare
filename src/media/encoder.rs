@@ -28,6 +28,7 @@ pub struct EncodedFrame {
 
 pub struct VideoEncoder {
     encoder: Encoder,
+    force_keyframe: bool,
 }
 
 impl VideoEncoder {
@@ -36,6 +37,7 @@ impl VideoEncoder {
         let config = EncoderConfig::new().intra_frame_period(IntraFramePeriod::from_num_frames(60));
         Ok(Self {
             encoder: Encoder::with_api_config(api, config)?,
+            force_keyframe: false,
         })
     }
 
@@ -46,6 +48,10 @@ impl VideoEncoder {
         // scrap gives us BGRA.
         //
         // openh264::formats::RgbSliceU8 expects RGB.
+
+        if self.force_keyframe{
+            self.force_keyframe = false;
+        }
 
         let sequence = frame.sequence;
 
@@ -101,6 +107,10 @@ impl VideoEncoder {
 
     //     Ok(packetize(uid, &encoded))
     // }
+
+    pub fn request_keyframe(&mut self) {
+        self.force_keyframe = true;
+    }
 }
 
 pub fn packetize(
@@ -174,3 +184,4 @@ fn contains_idr(data: &[u8]) -> bool {
 
     false
 }
+

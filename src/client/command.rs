@@ -32,6 +32,13 @@ pub enum ClientEvent {
     Error(String),
 
     Disconnected,
+
+    WatchStream{
+        uid: u64,
+        username: String,
+        stream_uid: u64,
+        stream_username: String,
+    }
 }
 
 pub enum ClientCommand {
@@ -40,4 +47,8 @@ pub enum ClientCommand {
     Disconnect,
     WatchStream { uid: u64 },
     LeaveStream { uid: u64 },
+}
+
+pub enum EncoderCommand {
+    ForceKeyframe,
 }

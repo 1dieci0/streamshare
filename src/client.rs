@@ -40,6 +40,8 @@ impl Client {
             tokio::sync::mpsc::channel(128);
         let (my_video_tx, my_video_rx) = 
             tokio::sync::mpsc::channel(8);
+        let (encoder_tx, encoder_rx) = 
+            tokio::sync::mpsc::channel(128);
 
         let (others_video_tx, others_video_rx) = tokio::sync::mpsc::channel::<RawFrame>(8);
 
@@ -51,6 +53,7 @@ impl Client {
             event_tx,
             my_video_rx,
             others_video_tx,
+            encoder_tx,
         ).await?;
 
         capture::start_capture(self.media.clone(), my_video_tx);

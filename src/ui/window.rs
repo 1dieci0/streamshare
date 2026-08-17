@@ -158,6 +158,10 @@ impl App {
 
                 self.ui_dirty = true;
             }
+
+            ClientEvent::WatchStream { uid, username, stream_uid, stream_username } => {
+                
+            }
         }
     }
 
