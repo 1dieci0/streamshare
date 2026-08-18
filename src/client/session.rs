@@ -144,92 +144,6 @@ impl ClientSession {
     ) {
         tokio::spawn(async move {
 
-            // loop {
-            //     match receive_packet::<ServerPacket>(
-            //         &mut recv
-            //     ).await {
-
-            //         Ok(packet) => {
-
-            //             let event =
-            //                 match packet {
-
-            //                     ServerPacket::UserJoined {
-            //                         uid,
-            //                         username,
-            //                     } =>
-            //                         ClientEvent::UserJoined {
-            //                             uid,
-            //                             username,
-            //                         },
-
-            //                     ServerPacket::UserLeft {
-            //                         uid,
-            //                         username,
-            //                     } =>
-            //                         ClientEvent::UserLeft {
-            //                             uid,
-            //                             username,
-            //                         },
-
-            //                     ServerPacket::StreamStarted {
-            //                         uid,
-            //                         username,
-            //                     } =>
-            //                         ClientEvent::StreamStarted {
-            //                             uid,
-            //                             username,
-            //                         },
-
-            //                     ServerPacket::StreamStopped {
-            //                         uid,
-            //                         username,
-            //                     } =>
-            //                         ClientEvent::StreamStopped {
-            //                             uid,
-            //                             username,
-            //                         },
-
-            //                     ServerPacket::InitialState { users, streams } => {
-            //                         ClientEvent::InitialState { users, streams }
-            //                     },
-
-            //                     ServerPacket::Error { error } =>
-            //                         ClientEvent::Error(error),
-
-            //                     ServerPacket::AuthAccepted { .. }
-            //                     | ServerPacket::AuthDenied => {
-            //                         eprintln!(
-            //                             "unexpected authentication packet"
-            //                         );
-
-            //                         continue;
-            //                     },
-
-            //                     ServerPacket::WatchStream {
-            //                         uid,
-            //                         username,
-            //                         stream_uid,
-            //                         stream_username 
-            //                     } => {
-            //                         if 
-            //                     } 
-            //                 };
-
-            //             if event_tx.send(event).await.is_err() {
-            //                 break;
-            //             }
-            //         }
-
-            //         Err(e) => {
-            //             eprintln!(
-            //                 "control receive error: {e}"
-            //             );
-
-            //             break;
-            //         }
-            //     }
-            // }
             loop {
                 let packet = match receive_packet::<ServerPacket>(&mut recv).await {
                     Ok(packet) => packet,
@@ -290,30 +204,28 @@ impl ClientSession {
 
                     ServerPacket::WatchStream {
                         uid,
-                        username,
                         stream_uid,
-                        stream_username,
                     } => {
                         println!(
-                            "watching stream {} ({})",
+                            "watching stream {}",
                             stream_uid,
-                            stream_username
                         );
 
                         if my_uid == stream_uid{
-                            let _ = encoder_tx
+                            println!("someone wants to watch me >.< ");
+                            match encoder_tx
                                 .send(EncoderCommand::ForceKeyframe)
-                                .await;
+                                .await{
+                                    Ok(()) => print!("Forcekeyframe sent"),
+                                    Err(e) => println!("FAILED to send forcekeyframe: {e}"),
+                                }
                         }
 
 
-                        // Optionally also tell the UI.
                         let _ = event_tx
                             .send(ClientEvent::WatchStream {
                                 uid,
-                                username,
                                 stream_uid,
-                                stream_username,
                             })
                             .await;
                     }

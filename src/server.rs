@@ -341,6 +341,15 @@ impl Server{
                     .ok_or_else(|| anyhow!("viewer {uid} not found"))?;
 
                 viewer.watching = Some(stream_uid);
+
+                println!("{} wants to watch {}", uid, stream_uid);
+
+                drop(state);
+
+                self.broadcast(
+                    ServerPacket::WatchStream { uid, stream_uid},
+                    None,
+                ).await;
             }
 
             ClientPacket::LeaveStream { uid: stream_uid } => {

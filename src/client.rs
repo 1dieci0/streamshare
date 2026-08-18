@@ -56,7 +56,7 @@ impl Client {
             encoder_tx,
         ).await?;
 
-        capture::start_capture(self.media.clone(), my_video_tx);
+        capture::start_capture(self.media.clone(), my_video_tx, encoder_rx);
 
         ui::start(
             command_tx,

@@ -86,9 +86,7 @@ pub enum ServerPacket {
 
     WatchStream{
         uid: u64,
-        username: String,
         stream_uid: u64,
-        stream_username: String,
     }
 }
 
@@ -354,14 +352,12 @@ impl Packet for ServerPacket{
                 }
             }
 
-            Self::WatchStream { uid, username, stream_uid, stream_username } => {
+            Self::WatchStream { uid, stream_uid } => {
                 out.push(packet_id::SERVER_WATCH_STREAM);
 
                 out.extend_from_slice(&uid.to_be_bytes());
-                put_string(&mut out, username);
 
                 out.extend_from_slice(&stream_uid.to_be_bytes());
-                put_string(&mut out, stream_username);
             }
         }
 
@@ -592,17 +588,11 @@ impl Packet for ServerPacket{
 
                 let uid = read_u64(&mut buf)?;
 
-                let username = read_string(&mut buf)?;
-
                 let stream_uid = read_u64(&mut buf)?;
-
-                let stream_username = read_string(&mut buf)?;
 
                 Some(Self::WatchStream {
                     uid,
-                    username,
                     stream_uid,
-                    stream_username,
                 })
             }
 

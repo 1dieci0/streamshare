@@ -35,9 +35,7 @@ pub enum ClientEvent {
 
     WatchStream{
         uid: u64,
-        username: String,
         stream_uid: u64,
-        stream_username: String,
     }
 }
 

@@ -1,3 +1,4 @@
+use tokio::sync::mpsc::Receiver;
 use openh264::{
     OpenH264API,
     encoder::{Encoder, EncoderConfig, IntraFramePeriod},
@@ -5,8 +6,7 @@ use openh264::{
 };
 
 use crate::{
-    media::frame::RawFrame,
-    protocol::video::{VideoCodec, VideoPacket},
+    client::command::EncoderCommand, media::frame::RawFrame, protocol::video::{VideoCodec, VideoPacket},
 };
 
 /// Keep enough room for the QUIC datagram header.
@@ -29,15 +29,17 @@ pub struct EncodedFrame {
 pub struct VideoEncoder {
     encoder: Encoder,
     force_keyframe: bool,
+    encoder_rx: Receiver<EncoderCommand>,
 }
 
 impl VideoEncoder {
-    pub fn new() -> Result<Self, openh264::Error> {
+    pub fn new(encoder_rx: Receiver<EncoderCommand>) -> Result<Self, openh264::Error> {
         let api = OpenH264API::from_source();
         let config = EncoderConfig::new().intra_frame_period(IntraFramePeriod::from_num_frames(60));
         Ok(Self {
             encoder: Encoder::with_api_config(api, config)?,
             force_keyframe: false,
+            encoder_rx,
         })
     }
 
@@ -49,9 +51,25 @@ impl VideoEncoder {
         //
         // openh264::formats::RgbSliceU8 expects RGB.
 
+        while let Ok(command) = self.encoder_rx.try_recv(){
+
+            println!("got something");
+
+            match command{
+                EncoderCommand::ForceKeyframe => {
+                    println!("someone joined ! ");
+                    self.force_keyframe = true;
+                }
+            }
+        }
+
+        // println!("test");
+
         if self.force_keyframe{
+            self.encoder.force_intra_frame();
             self.force_keyframe = false;
         }
+
 
         let sequence = frame.sequence;
 
@@ -98,19 +116,7 @@ impl VideoEncoder {
         })
     }
 
-    // pub fn encode_and_packetize(
-    //     &mut self,
-    //     uid: u64,
-    //     frame: &RawFrame,
-    // ) -> Result<Vec<VideoPacket>, openh264::Error> {
-    //     let encoded = self.encode_frame(frame)?;
 
-    //     Ok(packetize(uid, &encoded))
-    // }
-
-    pub fn request_keyframe(&mut self) {
-        self.force_keyframe = true;
-    }
 }
 
 pub fn packetize(
