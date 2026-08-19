@@ -1,296 +1,372 @@
 use std::{
-    io::{self, Write},
-    process::{Child, ChildStdin, Command, Stdio},
-    sync::mpsc,
-    thread,
+    io,
+    path::PathBuf,
+    process::Stdio,
+    sync::Arc,
+};
+
+use tokio::{
+    io::AsyncReadExt,
+    process::{Child, Command},
+    sync::mpsc::Sender,
 };
 
 use crate::{media::encoder::EncodedFrame, protocol::video::VideoCodec};
 
 
-type EncoderResult<T> = Result<T, Box<dyn std::error::Error + Send + Sync>>;
 
 pub struct FFmpegEncoder {
     child: Child,
-    stdin: ChildStdin,
-
-    width: u32,
-    height: u32,
-    fps: u32,
-    bitrate_kbps: u32,
-
-    frame_count: u64,
-    rx: mpsc::Receiver<Vec<u8>>,
 }
 
 impl FFmpegEncoder {
-    pub fn new(
-        ffmpeg_path: impl AsRef<std::ffi::OsStr>,
+    pub async fn start(
         width: u32,
         height: u32,
         fps: u32,
         bitrate_kbps: u32,
-    ) -> EncoderResult<Self> {
+        video_tx: Sender<EncodedFrame>,
+    ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         if width == 0 || height == 0 || fps == 0 {
-            return Err("invalid encoder dimensions or FPS".into());
+            return Err("invalid encoder dimensions/fps".into());
         }
 
-        let mut child = Command::new(ffmpeg_path)
-            // Raw BGRA frames come through stdin.
+        let ffmpeg = find_ffmpeg()?;
+
+        println!("Starting FFmpeg: {}", ffmpeg.display());
+
+        let filter = format!(
+            "ddagrab=output_idx=0:framerate={}:video_size={}x{}:draw_mouse=1",
+            fps, width, height
+        );
+
+        let mut child = Command::new(&ffmpeg)
             .args([
                 "-hide_banner",
                 "-loglevel",
                 "warning",
 
                 "-f",
-                "rawvideo",
-
-                "-pix_fmt",
-                "bgra",
-
-                "-video_size",
-                &format!("{}x{}", width, height),
-
-                "-framerate",
-                &fps.to_string(),
-
+                "lavfi",
                 "-i",
-                "pipe:0",
+                &filter,
 
-                // GPU encoder.
                 "-c:v",
                 "h264_nvenc",
 
-                // Low-latency settings.
                 "-preset",
                 "p4",
-
                 "-tune",
                 "ll",
-
-                "-rc",
-                "cbr",
-
-                "-b:v",
-                &format!("{}k", bitrate_kbps),
-
-                "-maxrate",
-                &format!("{}k", bitrate_kbps),
-
-                "-bufsize",
-                &format!("{}k", bitrate_kbps * 2),
-
-                "-g",
-                &(fps * 2).to_string(),
+                "-zerolatency",
+                "1",
 
                 "-bf",
                 "0",
 
-                "-pix_fmt",
-                "yuv420p",
+                "-g",
+                &(fps * 2).to_string(),
 
-                // Raw H264 elementary stream.
+                "-keyint_min",
+                &(fps * 2).to_string(),
+
+                "-forced-idr",
+                "1",
+
+                "-b:v",
+                &format!("{}k", bitrate_kbps),
+
+                // IMPORTANT:
+                // Insert an Access Unit Delimiter before each H264 access unit.
+                "-bsf:v",
+                "h264_metadata=aud=insert",
+
                 "-f",
                 "h264",
-
                 "pipe:1",
             ])
-            .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::inherit())
+            .kill_on_drop(true)
             .spawn()?;
 
-        let stdin = child
-            .stdin
-            .take()
-            .ok_or("failed to open FFmpeg stdin")?;
-
-        let stdout = child
+        let mut stdout = child
             .stdout
             .take()
             .ok_or("failed to open FFmpeg stdout")?;
+        
 
-        // FFmpeg writes an H264 byte stream to stdout.
-        //
-        // This thread collects bytes into complete H264 access units.
-        let (tx, rx) = mpsc::channel();
-
-        thread::spawn(move || {
-            let mut stdout = stdout;
-            let mut buffer = vec![0u8; 1024 * 1024];
-            let mut pending = Vec::new();
-
-            loop {
-                match std::io::Read::read(&mut stdout, &mut buffer) {
-                    Ok(0) => break,
-
-                    Ok(n) => {
-                        pending.extend_from_slice(&buffer[..n]);
-
-                        // H264 uses Annex-B start codes.
-                        //
-                        // We split whenever we find the next start code.
-                        while let Some(end) = find_next_access_unit(&pending) {
-                            let packet = pending.drain(..end).collect::<Vec<_>>();
-
-                            if !packet.is_empty() {
-                                if tx.send(packet).is_err() {
-                                    return;
-                                }
-                            }
-                        }
-                    }
-
-                    Err(_) => break,
-                }
-            }
-
-            if !pending.is_empty() {
-                let _ = tx.send(pending);
+        tokio::spawn(async move {
+            if let Err(e) =
+                read_h264_stream(&mut stdout, video_tx, width, height, fps).await
+            {
+                eprintln!("FFmpeg H264 reader stopped: {e}");
             }
         });
 
-        Ok(Self {
-            child,
-            stdin,
-            width,
-            height,
-            fps,
-            bitrate_kbps,
-            frame_count: 0,
-            rx,
-        })
+        Ok(Self { child })
     }
 
-    pub fn encode_bgra_frame(
-        &mut self,
-        pixels: &[u8],
-        timestamp: u64,
-        sequence: u64,
-    ) -> EncoderResult<Option<EncodedFrame>> {
-        let expected = self.width as usize * self.height as usize * 4;
-
-        if pixels.len() != expected {
-            return Err(format!(
-                "invalid BGRA frame size: got {}, expected {}",
-                pixels.len(),
-                expected
-            )
-            .into());
-        }
-
-        self.stdin.write_all(pixels)?;
-        self.stdin.flush()?;
-
-        self.frame_count += 1;
-
-        match self.rx.try_recv() {
-            Ok(data) => {
-                let keyframe = is_keyframe(&data);
-
-                Ok(Some(EncodedFrame {
-                    sequence,
-                    data,
-                    timestamp,
-                    codec: VideoCodec::H264,
-                    keyframe,
-                    width: self.width as usize,
-                    height: self.height as usize,
-                }))
-            }
-
-            Err(mpsc::TryRecvError::Empty) => Ok(None),
-
-            Err(mpsc::TryRecvError::Disconnected) => {
-                Err("FFmpeg encoder process exited".into())
-            }
-}
+    pub async fn stop(&mut self) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+        self.child.kill().await?;
+        Ok(())
     }
 
-    pub fn stats(&self) -> EncoderStats {
-        EncoderStats {
-            frames_encoded: self.frame_count,
-            bitrate_kbps: self.bitrate_kbps,
-            width: self.width,
-            height: self.height,
-            fps: self.fps,
+    pub fn is_running(&mut self) -> bool {
+        match self.child.try_wait() {
+            Ok(Some(_)) => false,
+            Ok(None) => true,
+            Err(_) => false,
         }
     }
 }
 
-impl Drop for FFmpegEncoder {
-    fn drop(&mut self) {
-        let _ = self.stdin.flush();
-        let _ = self.child.kill();
-        let _ = self.child.wait();
+async fn read_h264_stream(
+    stdout: &mut tokio::process::ChildStdout,
+    video_tx: Sender<EncodedFrame>,
+    width: u32,
+    height: u32,
+    fps: u32,
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    println!("H264 reader started");
+
+    let mut buffer = Vec::<u8>::with_capacity(1024 * 1024);
+
+    let mut temp = [0u8; 64 * 1024];
+
+    let frame_duration_ms = 1000 / fps as u64;
+
+    let mut sequence = 0u64;
+
+    loop {
+        let n = stdout.read(&mut temp).await?;
+
+        // if n == 0 {
+        //     println!("FFmpeg closed stdout");
+        //     break;
+        // }
+
+        buffer.extend_from_slice(&temp[..n]);
+
+        // println!(
+        //     "FFmpeg gave us {} bytes, buffer = {} bytes",
+        //     n,
+        //     buffer.len()
+        // );
+
+        loop {
+            let Some(frame_end) = find_next_frame(&buffer) else {
+                break;
+            };
+
+            let data: Vec<u8> = buffer.drain(..frame_end).collect();
+
+            if data.is_empty() {
+                continue;
+            }
+
+            let keyframe = contains_idr(&data);
+            if keyframe{
+                println!("idr keyframe :fireemoji:");
+            }
+
+            // println!(
+            //     "H264 frame {}: {} bytes, keyframe={}",
+            //     sequence,
+            //     data.len(),
+            //     keyframe
+            // );
+
+            let encoded = EncodedFrame {
+                sequence,
+                timestamp: sequence * frame_duration_ms,
+                keyframe,
+                codec: VideoCodec::H264,
+                width: width as usize,
+                height: height as usize,
+                data,
+            };
+
+            sequence += 1;
+
+            match video_tx.try_send(encoded) {
+                Ok(_) => {}
+
+                Err(tokio::sync::mpsc::error::TrySendError::Full(_)) => {
+                    // Drop frames if the network side is behind.
+                    //
+                    // This prevents latency from growing forever.
+                }
+
+                Err(tokio::sync::mpsc::error::TrySendError::Closed(_)) => {
+                    println!("Video channel closed");
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
+/// Find a complete H264 access unit.
+///
+/// H264 Annex-B contains:
+///
+/// 00 00 01
+/// or
+/// 00 00 00 01
+///
+/// We split on AUD NAL units (NAL type 9).
+fn find_next_access_unit(buffer: &[u8]) -> Option<usize> {
+    let mut positions = Vec::new();
+
+    let mut i = 0;
+
+    while i + 3 <= buffer.len() {
+        let start_len = if i + 4 <= buffer.len()
+            && buffer[i] == 0
+            && buffer[i + 1] == 0
+            && buffer[i + 2] == 0
+            && buffer[i + 3] == 1
+        {
+            4
+        } else if buffer[i] == 0
+            && buffer[i + 1] == 0
+            && buffer[i + 2] == 1
+        {
+            3
+        } else {
+            i += 1;
+            continue;
+        };
+
+        let nal_start = i + start_len;
+
+        if nal_start < buffer.len() {
+            let nal_type = buffer[nal_start] & 0x1f;
+
+            if nal_type == 9 {
+                positions.push(i);
+            }
+        }
+
+        i += start_len;
+    }
+
+    // Need two AUDs to know where the current access unit ends.
+    if positions.len() >= 2 {
+        Some(positions[1])
+    } else {
+        None
     }
 }
 
-fn find_next_access_unit(data: &[u8]) -> Option<usize> {
-    if data.len() < 5 {
-        return None;
-    }
+fn contains_idr(data: &[u8]) -> bool {
+    let mut i = 0;
 
-    // Look for the second Annex-B start code.
-    for i in 4..data.len().saturating_sub(3) {
+    while i + 3 < data.len() {
+        let start_code_len;
+
         if data[i] == 0
             && data[i + 1] == 0
             && data[i + 2] == 0
             && data[i + 3] == 1
         {
-            return Some(i);
-        }
-
-        // 00 00 01
-        if i >= 3
-            && data[i - 2] == 0
-            && data[i - 1] == 0
-            && data[i] == 1
+            start_code_len = 4;
+        } else if data[i] == 0
+            && data[i + 1] == 0
+            && data[i + 2] == 1
         {
-            return Some(i + 1);
-        }
-    }
-
-    None
-}
-
-fn is_keyframe(data: &[u8]) -> bool {
-    let mut i = 0;
-
-    while i + 4 < data.len() {
-        let start_len;
-
-        if data[i..].starts_with(&[0, 0, 0, 1]) {
-            start_len = 4;
-        } else if data[i..].starts_with(&[0, 0, 1]) {
-            start_len = 3;
+            start_code_len = 3;
         } else {
             i += 1;
             continue;
         }
 
-        if i + start_len >= data.len() {
+        let nal_start = i + start_code_len;
+
+        if nal_start >= data.len() {
             break;
         }
 
-        let nal_type = data[i + start_len] & 0x1f;
+        let nal_type = data[nal_start] & 0x1f;
 
-        // IDR slice.
         if nal_type == 5 {
             return true;
         }
 
-        i += start_len + 1;
+        i = nal_start;
     }
 
     false
 }
 
-#[derive(Debug, Clone, Copy)]
-pub struct EncoderStats {
-    pub frames_encoded: u64,
-    pub bitrate_kbps: u32,
-    pub width: u32,
-    pub height: u32,
-    pub fps: u32,
+fn find_ffmpeg() -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+    // First try ffmpeg.exe next to the application.
+    let exe_dir = std::env::current_exe()?
+        .parent()
+        .ok_or("failed to determine executable directory")?
+        .to_path_buf();
+
+    // println!("{}", exe_dir.clone().into_os_string().into_string().unwrap());
+
+    let local = exe_dir.join("ffmpeg.exe");
+
+    if local.exists() {
+        return Ok(local);
+    }
+
+    // Then try PATH.
+    if let Ok(path) = which::which("ffmpeg") {
+        return Ok(path);
+    }
+
+    Err(
+        "ffmpeg.exe was not found. Put ffmpeg.exe next to the StreamShare executable."
+            .into(),
+    )
+}
+
+fn find_next_frame(buffer: &[u8]) -> Option<usize> {
+    let mut aud_positions = Vec::new();
+
+    let mut i = 0;
+
+    while i + 3 < buffer.len() {
+        let start_code_len = if buffer[i..].starts_with(&[0, 0, 0, 1]) {
+            4
+        } else if buffer[i..].starts_with(&[0, 0, 1]) {
+            3
+        } else {
+            i += 1;
+            continue;
+        };
+
+        let nal_start = i + start_code_len;
+
+        if nal_start >= buffer.len() {
+            break;
+        }
+
+        let nal_type = buffer[nal_start] & 0x1f;
+
+        // H264 AUD
+        if nal_type == 9 {
+            aud_positions.push(i);
+
+            // We have:
+            //
+            // AUD #1 ... frame data ... AUD #2
+            //
+            // Therefore everything before AUD #2 is one access unit.
+            if aud_positions.len() >= 2 {
+                return Some(aud_positions[1]);
+            }
+        }
+
+        i = nal_start;
+    }
+
+    None
 }

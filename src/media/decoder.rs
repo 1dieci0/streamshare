@@ -30,29 +30,24 @@ impl VideoDecoder {
             return Ok(None);
         }
 
+        // println!(
+        //     "Decoding H264: seq={}, {} bytes, keyframe={}",
+        //     frame.sequence,
+        //     frame.data.len(),
+        //     frame.keyframe
+        // );
+
         let Some(decoded) = self.decoder.decode(&frame.data)? else {
             return Ok(None);
         };
 
-        let mut rgba = vec![0u8; decoded.rgba8_len()];
-        decoded.write_rgba8(&mut rgba);
-
-        let width = frame.width as usize;
-        let height = frame.height as usize;
+        let width = decoded.dimensions().0 as usize;
+        let height = decoded.dimensions().1 as usize;
 
         let expected_len = width * height * 4;
 
-        if rgba.len() != expected_len {
-            eprintln!(
-                "decoded dimensions don't match frame metadata: \
-                 metadata={}x{}, rgba={} bytes",
-                width,
-                height,
-                rgba.len()
-            );
-
-            return Ok(None);
-        }
+        let mut rgba = vec![0u8; expected_len];
+        decoded.write_rgba8(&mut rgba);
 
         let mut bgra = vec![0u8; expected_len];
 

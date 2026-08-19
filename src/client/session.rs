@@ -216,8 +216,8 @@ impl ClientSession {
                             match encoder_tx
                                 .send(EncoderCommand::ForceKeyframe)
                                 .await{
-                                    Ok(()) => print!("Forcekeyframe sent"),
-                                    Err(e) => println!("FAILED to send forcekeyframe: {e}"),
+                                    Ok(()) => {},
+                                    Err(e) => {},
                                 }
                         }
 
@@ -284,69 +284,132 @@ impl ClientSession {
         connection: quinn::Connection,
         video_tx: mpsc::Sender<RawFrame>,
     ) {
+        // Only allow a couple of encoded frames to wait for decoding.
+        //
+        // If the decoder falls behind, old frames are dropped instead
+        // of building an enormous latency-inducing backlog.
+        let (decode_tx, mut decode_rx) =
+            mpsc::channel::<EncodedFrame>(2);
+
+        //
+        // ------------------------------------------------------------
+        // QUIC RECEIVER
+        // ------------------------------------------------------------
+        //
+        // This task ONLY does:
+        //
+        // QUIC datagram
+        //      ↓
+        // packet decode
+        //      ↓
+        // reassembly
+        //      ↓
+        // decoder queue
+        //
+        // It never performs H264 decoding.
+        //
         tokio::spawn(async move {
             let mut reassembler = VideoReassembler::new();
-
-            let mut decoder = match VideoDecoder::new() {
-                Ok(decoder) => decoder,
-                Err(e) => {
-                    eprintln!("failed to initialize H264 decoder: {e}");
-                    return;
-                }
-            };
 
             loop {
                 let data = match connection.read_datagram().await {
                     Ok(data) => data,
+
                     Err(e) => {
                         eprintln!("video receive error: {e}");
                         break;
                     }
                 };
 
-                // println!("received datagram: {} bytes", data.len());
-
                 let Some(packet) = VideoPacket::decode(&data) else {
                     eprintln!("invalid video packet");
                     continue;
                 };
 
-                // println!(
-                //     "packet frame={} {}/{}",
-                //     packet.frame_id,
-                //     packet.packet_index + 1,
-                //     packet.packet_total
-                // );
-
                 if let Some(frame) = reassembler.push(packet) {
-                    // println!(
-                    //     "REASSEMBLED frame {} ({} bytes)",
-                    //     frame.sequence,
-                    //     frame.data.len()
-                    // );
 
-                    match decoder.decode_frame(&frame) {
-                        Ok(Some(raw_frame)) => {
-                            // println!(
-                            //     "decoded frame {} ({}x{})",
-                            //     raw_frame.sequence,
-                            //     raw_frame.width,
-                            //     raw_frame.height
-                            // );
+                    //
+                    // IMPORTANT:
+                    //
+                    // If decoder is behind, don't wait.
+                    // Drop this frame.
+                    //
+                    match decode_tx.try_send(frame) {
+                        Ok(()) => {}
 
-                            if video_tx.send(raw_frame).await.is_err() {
+                        Err(mpsc::error::TrySendError::Full(_frame)) => {
+                            // Decoder is behind.
+                            //
+                            // Dropping video is preferable to
+                            // increasing latency.
+                        }
+
+                        Err(mpsc::error::TrySendError::Closed(_frame)) => {
+                            eprintln!("decoder task closed");
+                            break;
+                        }
+                    }
+                }
+            }
+        });
+
+        //
+        // ------------------------------------------------------------
+        // DECODER
+        // ------------------------------------------------------------
+        //
+        // OpenH264 is CPU-heavy, so run it outside Tokio.
+        //
+        tokio::task::spawn_blocking(move || {
+            let mut decoder = match VideoDecoder::new() {
+                Ok(decoder) => decoder,
+
+                Err(e) => {
+                    eprintln!("failed to initialize H264 decoder: {e}");
+                    return;
+                }
+            };
+
+            //
+            // This is a synchronous blocking receiver.
+            //
+            while let Some(frame) = decode_rx.blocking_recv() {
+
+                match decoder.decode_frame(&frame) {
+
+                    Ok(Some(raw_frame)) => {
+
+                        //
+                        // Don't let the renderer cause the decoder
+                        // to block indefinitely.
+                        //
+                        match video_tx.try_send(raw_frame) {
+                            Ok(()) => {}
+
+                            Err(mpsc::error::TrySendError::Full(_frame)) => {
+                                // Renderer is behind.
+                                //
+                                // Drop the frame rather than increasing
+                                // latency.
+                            }
+
+                            Err(mpsc::error::TrySendError::Closed(_frame)) => {
                                 eprintln!("video renderer channel closed");
                                 break;
                             }
                         }
+                    }
 
-                        Ok(None) => {
-                            println!("decoder returned None");
-                        }
+                    Ok(None) => {
+                        // Decoder needs more H264 data.
+                    }
 
-                        Err(e) => {
-                            eprintln!("H264 decode error: {e}");
-                        }
+                    Err(e) => {
+                        // eprintln!(
+                        //     "H264 decode error for sequence {}: {}",
+                        //     frame.sequence,
+                        //     e
+                        // );
                     }
                 }
             }
