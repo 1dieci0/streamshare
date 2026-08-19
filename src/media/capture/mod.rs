@@ -7,6 +7,9 @@ mod linux;
 use std::io;
 use std::sync::Arc;
 
+pub mod ffmpeg_encoder;
+
+
 use tokio::sync::mpsc::{Receiver, Sender};
 
 use crate::{

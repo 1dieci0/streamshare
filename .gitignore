@@ -17,3 +17,6 @@ target
 rustc-ice-*.txt
 
 certs/*
+
+
+ffmpeg/
