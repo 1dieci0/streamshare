@@ -1,5 +1,7 @@
 use std::time::Instant;
 
+use crate::protocol::video::VideoCodec;
+
 /// One complete video frame.
 //#[derive(Clone, Default)]
 pub struct RawFrame {
@@ -9,4 +11,3 @@ pub struct RawFrame {
     pub height: usize,
     pub data: Vec<u8>,
 }
-

@@ -4,7 +4,7 @@ use tokio::{stream, sync::mpsc};
 use quinn::{RecvStream, SendStream};
 
 
-use crate::{client::{command::{ClientCommand, ClientEvent, EncoderCommand}, endpoint}, media::{decoder::VideoDecoder, encoder::EncodedFrame, frame::RawFrame, reassembler::VideoReassembler, state::Media}, network::{datagram::send_frame, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}};
+use crate::{client::{command::{ClientCommand, ClientEvent, EncoderCommand}, endpoint}, media::{decoder::{FFmpegDecoder}, encoder::{EncodedFrame, packetize}, frame::RawFrame, reassembler::VideoReassembler, state::Media}, network::{datagram::send_frame, stream::{receive_packet, send_packet}}, protocol::{command::{ClientPacket, ServerPacket}, video::VideoPacket}};
 
 use super::config::ClientConfig;
 
@@ -24,7 +24,7 @@ impl ClientSession {
         event_tx: mpsc::Sender<ClientEvent>,
         my_video_rx: mpsc::Receiver<EncodedFrame>,
         others_video_tx: mpsc::Sender<RawFrame>,
-        encoder_tx: mpsc::Sender<EncoderCommand>,
+        //encoder_tx: mpsc::Sender<EncoderCommand>,
     ) -> anyhow::Result<(Self, u64)> {
         let server_addr = config.server_addr()?;
 
@@ -69,7 +69,8 @@ impl ClientSession {
 
         Self::spawn_sender(media.clone(), send, command_rx);
 
-        Self::spawn_receiver(uid, recv, event_tx.clone(), encoder_tx);
+        //Self::spawn_receiver(uid, recv, event_tx.clone(), encoder_tx);
+        Self::spawn_receiver(uid, recv, event_tx.clone());
 
         Self::spawn_video_sender(
             connection.clone(),
@@ -140,7 +141,7 @@ impl ClientSession {
         my_uid: u64,
         mut recv: RecvStream,
         event_tx: mpsc::Sender<ClientEvent>,
-        encoder_tx: mpsc::Sender<EncoderCommand>
+        //encoder_tx: mpsc::Sender<EncoderCommand>
     ) {
         tokio::spawn(async move {
 
@@ -213,12 +214,12 @@ impl ClientSession {
 
                         if my_uid == stream_uid{
                             println!("someone wants to watch me >.< ");
-                            match encoder_tx
-                                .send(EncoderCommand::ForceKeyframe)
-                                .await{
-                                    Ok(()) => {},
-                                    Err(e) => {},
-                                }
+                            // match encoder_tx
+                            //     .send(EncoderCommand::ForceKeyframe)
+                            //     .await{
+                            //         Ok(()) => {},
+                            //         Err(e) => {},
+                            // }
                         }
 
 
@@ -239,82 +240,114 @@ impl ClientSession {
         });
     }
 
-    fn spawn_video_sender(
-        connection: quinn::Connection,
-        uid: u64,
-        mut video_rx: mpsc::Receiver<EncodedFrame>,
-    ) {
-        tokio::spawn(async move {
-            while let Some(frame) = video_rx.recv().await {
-                let packets = crate::media::encoder::packetize(uid, &frame);
+pub fn spawn_video_sender(
+    connection: quinn::Connection,
+    uid: u64,
+    mut video_rx: mpsc::Receiver<EncodedFrame>,
+) {
+    tokio::spawn(async move {
+        println!(
+            "[VIDEO] sender task started"
+        );
 
-                for packet in packets {
-                    let data = packet.encode();
+        while let Some(frame) =
+            video_rx.recv().await
+        {
+            let packets =
+                packetize(uid, &frame);
 
-                    match connection.send_datagram(data.into()) {
-                        Ok(()) => {}
+            println!(
+                "[VIDEO] frame={} {}KB keyframe={} packets={}",
+                frame.sequence,
+                frame.data.len() / 1024,
+                frame.keyframe,
+                packets.len(),
+            );
 
-                        Err(quinn::SendDatagramError::UnsupportedByPeer) => {
-                            eprintln!("peer does not support QUIC datagrams");
-                            return;
-                        }
+            for packet in packets {
+                let packet_index =
+                    packet.packet_index;
 
-                        Err(quinn::SendDatagramError::Disabled) => {
-                            eprintln!("QUIC datagrams are disabled");
-                            return;
-                        }
+                let packet_total =
+                    packet.packet_total;
 
-                        Err(quinn::SendDatagramError::TooLarge) => {
-                            eprintln!("video datagram too large");
-                            continue;
-                        }
+                let data =
+                    packet.encode();
 
-                        Err(quinn::SendDatagramError::ConnectionLost(e)) => {
-                            eprintln!("connection lost while sending video: {e}");
-                            return;
-                        }
+                match connection
+                    .send_datagram(data.into())
+                {
+                    Ok(()) => {}
+
+                    Err(
+                        quinn::SendDatagramError::UnsupportedByPeer
+                    ) => {
+                        eprintln!(
+                            "[VIDEO] peer does not support QUIC datagrams"
+                        );
+
+                        return;
+                    }
+
+                    Err(
+                        quinn::SendDatagramError::Disabled
+                    ) => {
+                        eprintln!(
+                            "[VIDEO] QUIC datagrams disabled"
+                        );
+
+                        return;
+                    }
+
+                    Err(
+                        quinn::SendDatagramError::TooLarge
+                    ) => {
+                        eprintln!(
+                            "[VIDEO] frame={} packet={}/{} TOO LARGE",
+                            frame.sequence,
+                            packet_index + 1,
+                            packet_total,
+                        );
+
+                        continue;
+                    }
+
+                    Err(
+                        quinn::SendDatagramError::ConnectionLost(e)
+                    ) => {
+                        eprintln!(
+                            "[VIDEO] connection lost: {}",
+                            e
+                        );
+
+                        return;
                     }
                 }
             }
-        });
-    }
+        }
 
+        println!(
+            "[VIDEO] encoded frame channel closed"
+        );
+    });
+}
     
     fn spawn_video_receiver(
         connection: quinn::Connection,
         video_tx: mpsc::Sender<RawFrame>,
     ) {
-        // Only allow a couple of encoded frames to wait for decoding.
-        //
-        // If the decoder falls behind, old frames are dropped instead
-        // of building an enormous latency-inducing backlog.
-        let (decode_tx, mut decode_rx) =
+        let (decode_tx, decode_rx) =
             mpsc::channel::<EncodedFrame>(2);
 
-        //
         // ------------------------------------------------------------
-        // QUIC RECEIVER
+        // QUIC RECEIVER (unchanged)
         // ------------------------------------------------------------
-        //
-        // This task ONLY does:
-        //
-        // QUIC datagram
-        //      ↓
-        // packet decode
-        //      ↓
-        // reassembly
-        //      ↓
-        // decoder queue
-        //
-        // It never performs H264 decoding.
-        //
         tokio::spawn(async move {
             let mut reassembler = VideoReassembler::new();
 
             loop {
                 let data = match connection.read_datagram().await {
                     Ok(data) => data,
-
                     Err(e) => {
                         eprintln!("video receive error: {e}");
                         break;
@@ -327,91 +360,40 @@ impl ClientSession {
                 };
 
                 if let Some(frame) = reassembler.push(packet) {
+                let nal_type = frame.data.first().map(|b| b & 0x1f).unwrap_or(0);
+                let is_parameter_set = nal_type == 7 || nal_type == 8; // SPS or PPS
 
-                    //
-                    // IMPORTANT:
-                    //
-                    // If decoder is behind, don't wait.
-                    // Drop this frame.
-                    //
+                if is_parameter_set {
+                    // Always deliver — never subject to backpressure drop.
+                    if decode_tx.send(frame).await.is_err() {
+                        eprintln!("decoder task closed");
+                        break;
+                    }
+                } else {
                     match decode_tx.try_send(frame) {
                         Ok(()) => {}
-
-                        Err(mpsc::error::TrySendError::Full(_frame)) => {
-                            // Decoder is behind.
-                            //
-                            // Dropping video is preferable to
-                            // increasing latency.
-                        }
-
-                        Err(mpsc::error::TrySendError::Closed(_frame)) => {
+                        Err(mpsc::error::TrySendError::Full(_)) => {}
+                        Err(mpsc::error::TrySendError::Closed(_)) => {
                             eprintln!("decoder task closed");
                             break;
                         }
                     }
                 }
             }
+            }
         });
 
-        //
         // ------------------------------------------------------------
-        // DECODER
+        // DECODER — spawned here, per connection, on demand.
         // ------------------------------------------------------------
-        //
-        // OpenH264 is CPU-heavy, so run it outside Tokio.
-        //
-        tokio::task::spawn_blocking(move || {
-            let mut decoder = match VideoDecoder::new() {
-                Ok(decoder) => decoder,
-
-                Err(e) => {
-                    eprintln!("failed to initialize H264 decoder: {e}");
-                    return;
-                }
-            };
-
-            //
-            // This is a synchronous blocking receiver.
-            //
-            while let Some(frame) = decode_rx.blocking_recv() {
-
-                match decoder.decode_frame(&frame) {
-
-                    Ok(Some(raw_frame)) => {
-
-                        //
-                        // Don't let the renderer cause the decoder
-                        // to block indefinitely.
-                        //
-                        match video_tx.try_send(raw_frame) {
-                            Ok(()) => {}
-
-                            Err(mpsc::error::TrySendError::Full(_frame)) => {
-                                // Renderer is behind.
-                                //
-                                // Drop the frame rather than increasing
-                                // latency.
-                            }
-
-                            Err(mpsc::error::TrySendError::Closed(_frame)) => {
-                                eprintln!("video renderer channel closed");
-                                break;
-                            }
-                        }
-                    }
-
-                    Ok(None) => {
-                        // Decoder needs more H264 data.
-                    }
-
-                    Err(e) => {
-                        // eprintln!(
-                        //     "H264 decode error for sequence {}: {}",
-                        //     frame.sequence,
-                        //     e
-                        // );
-                    }
-                }
+        tokio::spawn(async move {
+            if let Err(e) = FFmpegDecoder::start(
+                1920,
+                1080,
+                video_tx,
+                decode_rx,
+            ).await {
+                eprintln!("failed to start FFmpeg decoder: {e:#}");
             }
         });
     }

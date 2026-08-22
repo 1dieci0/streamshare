@@ -23,5 +23,7 @@ serde_json = "1.0.151"
 sha2 = "0.11.0"
 tokio = {version = "1.53.1", features = ["full"] }
 which = "8"
+windows = "0.62.2"
+windows-capture = "2.0.1"
 winit = "0.30.13"
 winit_input_helper = "0.17.0"
